@@ -1280,13 +1280,14 @@ _OPENAI_CHAT_REPLY: Final = {
 @pytest.mark.parametrize("sync_mode", [True, False])
 @pytest.mark.respx(assert_all_called=True)
 @pytest.mark.asyncio
-async def test_openai_pdf_url_is_downloaded_into_file_data(
+async def test_openai_media_download_preserves_supported_chat_fields(
     monkeypatch: pytest.MonkeyPatch, respx_mock: respx.MockRouter, sync_mode: bool
 ) -> None:
     monkeypatch.setattr(litellm, "user_url_validation", False)
     monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
     pdf_url: Final = "https://files.example.test/pdf-url-download.pdf"
     pdf_content: Final = b"%PDF-1.7\nmock-pdf"
+    image_url: Final = "data:image/png;base64,aW1hZ2U="
     in_memory_cache.delete_cache(pdf_url)
     download: Final = respx_mock.get(pdf_url).mock(
         return_value=Response(200, headers={"content-type": "application/pdf"}, content=pdf_content)
@@ -1300,7 +1301,12 @@ async def test_openai_pdf_url_is_downloaded_into_file_data(
             "role": "user",
             "content": [
                 {"type": "text", "text": "What is the first page of the PDF?"},
-                {"type": "file", "file": {"file_id": pdf_url}},
+                {"type": "file", "file": {
+                    "file_id": pdf_url, "format": "application/pdf", "detail": "high", "video_metadata": {"fps": 2},
+                }},
+                {"type": "image_url", "image_url": {
+                    "url": image_url, "format": "image/png", "detail": "high", "video_metadata": {"fps": 2},
+                }},
             ],
         }
     ]
@@ -1310,13 +1316,17 @@ async def test_openai_pdf_url_is_downloaded_into_file_data(
         await litellm.acompletion(model="gpt-4o", messages=messages, api_key="sk-openai-test")
 
     assert download.call_count == 1
-    assert json.loads(chat.calls[0].request.content)["messages"][0]["content"][1] == {
-        "type": "file",
-        "file": {
-            "file_data": f"data:application/pdf;base64,{base64.b64encode(pdf_content).decode('utf-8')}",
-            "filename": "my_file.pdf",
+    assert json.loads(chat.calls[0].request.content)["messages"][0]["content"] == [
+        {"type": "text", "text": "What is the first page of the PDF?"},
+        {
+            "type": "file",
+            "file": {
+                "file_data": f"data:application/pdf;base64,{base64.b64encode(pdf_content).decode('utf-8')}",
+                "filename": "my_file.pdf",
+            },
         },
-    }
+        {"type": "image_url", "image_url": {"url": image_url, "detail": "high"}},
+    ]
 
 
 @pytest.mark.respx(assert_all_called=True)

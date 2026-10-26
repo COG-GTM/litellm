@@ -2463,3 +2463,25 @@ def test_schema_has_unresolvable_ref_flags_refs_that_cannot_be_inlined(schema, u
 def test_schema_size_counts_every_written_object_once(schema, properties, branches):
     assert schema_property_count(schema) == properties
     assert schema_grammar_branch_count(schema) == branches
+
+
+@pytest.mark.parametrize("part_type", ["image_url", "input_image"])
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"image_url": "data:image/png;base64,IMAGE", "detail": "low"},
+        {"image_url": {"url": "data:image/png;base64,IMAGE", "detail": "high"}},
+        {"url": "data:image/png;base64,IMAGE", "detail": "low"},
+    ],
+)
+def test_shared_image_url_agrees_with_responses_normalization(
+    part_type: str, fields: Mapping[str, object],
+) -> None:
+    from litellm.litellm_core_utils.prompt_templates.common_utils import as_openai_image_part
+    from litellm.responses.litellm_completion_transformation.transformation import LiteLLMCompletionResponsesConfig
+
+    part: Final = {"type": part_type, **fields}
+    normalized: Final = LiteLLMCompletionResponsesConfig._transform_input_image_item_to_image_item(part)
+    expected: Final = {"type": "image_url", "image_url": {"url": "data:image/png;base64,IMAGE"}}
+    assert as_openai_image_part(part) == expected
+    assert as_openai_image_part(normalized) == expected

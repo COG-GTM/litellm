@@ -271,14 +271,13 @@ def anthropic_image_source_to_openai_url(image_source: Mapping[str, object]) -> 
 def _image_part_url(part: Mapping[str, object]) -> str | None:
     """The image URL carried by one content part, whichever of the three dialects wrote it."""
     part_type: Final = part.get("type")
-    if part_type == "image_url":
-        image_url: Final = part.get("image_url")
+    if part_type in ("image_url", "input_image"):
+        image_url: Final = part.get("image_url") or part.get("url")
         if isinstance(image_url, str):
             return image_url
-        return image_url.get("url") if isinstance(image_url, Mapping) else None
-    if part_type == "input_image":
-        responses_url: Final = part.get("image_url")
-        return responses_url if isinstance(responses_url, str) else None
+        image_fields: Final = as_str_mapping(image_url)
+        url: Final = image_fields.get("url") if image_fields is not None else None
+        return url if isinstance(url, str) else None
     if part_type == "image":
         source: Final = part.get("source")
         return anthropic_image_source_to_openai_url(source) if isinstance(source, Mapping) else None
