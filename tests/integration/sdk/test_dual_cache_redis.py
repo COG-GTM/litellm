@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from litellm.caching.affinity_cache import claim_affinity_pin
+from litellm.caching.affinity_cache import claim_affinity_pin, read_affinity_pin
 from litellm.caching.dual_cache import DualCache
 from litellm.caching.in_memory_cache import InMemoryCache
 from litellm.caching.redis_cache import RedisCache
@@ -154,5 +154,35 @@ async def test_session_repin_lua_preserves_healthy_legacy_pins_and_replaces_unav
         )
         assert moved == replacement
         assert await redis.async_get_cache(key) == replacement
+    finally:
+        await redis.async_delete_cache(key)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stored", ['{"model":"current","tier":"REASONING"}', '"current"', "current"])
+async def test_tier_pin_reads_shared_state_refreshes_ttl_and_forgets_deleted_pins(stored: str) -> None:
+    redis: Final = _redis_cache()
+    redis.namespace = f"tier-read-{uuid.uuid4().hex}"
+    workers: Final = (DualCache(redis_cache=redis), DualCache(redis_cache=redis))
+    key: Final = "session"
+    namespaced: Final = redis.check_and_fix_namespace(key)
+    try:
+        for worker in workers:
+            worker.in_memory_cache.set_cache(key, {"model": "old", "tier": "SIMPLE"}, ttl=60)
+        redis.redis_client.set(namespaced, stored, ex=10)
+        first: Final = await read_affinity_pin(workers[0], key, 60)
+        second: Final = await read_affinity_pin(workers[1], key, 60)
+        assert first == second and first in ("current", {"model": "current", "tier": "REASONING"})
+        assert all(worker.in_memory_cache.get_cache(key) == first for worker in workers)
+        assert 10 < redis.redis_client.ttl(namespaced) <= 60
+        replacement: Final = {"model": "newer", "tier": "SIMPLE"}
+        await redis.async_set_cache(key, replacement, ttl=10)
+        assert await read_affinity_pin(workers[0], key, 60) == replacement
+        assert await read_affinity_pin(workers[1], key, 60) == replacement
+        await redis.async_delete_cache(key)
+        for worker in workers:
+            assert await read_affinity_pin(worker, key, 60) is None
+            assert worker.in_memory_cache.get_cache(key) is None
+        assert redis.redis_client.exists(namespaced) == 0
     finally:
         await redis.async_delete_cache(key)
