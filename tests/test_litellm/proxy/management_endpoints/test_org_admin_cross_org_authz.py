@@ -87,11 +87,51 @@ def _status_code(exc: Exception) -> int:
 
 @pytest.fixture
 def caller_is_org_a_admin():
+    lookup = AsyncMock(return_value=[ORG_A])
     with patch(
-        "litellm.proxy.auth.auth_checks.get_user_object",
-        new=AsyncMock(return_value=_caller_user([ORG_A])),
+        "litellm.proxy.management_endpoints.common_utils._get_caller_org_admin_org_ids",
+        new=lookup,
+    ), patch(
+        "litellm.proxy.management_endpoints.team_endpoints._get_caller_org_admin_org_ids",
+        new=lookup,
+    ), patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints._get_caller_org_admin_org_ids",
+        new=lookup,
     ):
         yield
+
+
+@pytest.mark.asyncio
+async def test_caller_org_admin_ids_read_from_db_not_cache(monkeypatch):
+    """Revoked org_admin roles must take effect immediately, so the lookup
+    queries the membership table directly instead of the cached user object."""
+    from litellm.proxy.management_endpoints.common_utils import (
+        _get_caller_org_admin_org_ids,
+    )
+
+    prisma = MagicMock()
+    prisma.db.litellm_organizationmembership.find_many = AsyncMock(
+        return_value=[_membership(CALLER_ID, ORG_A)]
+    )
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", prisma)
+    cached_lookup = AsyncMock(return_value=_caller_user([ORG_A, ORG_B]))
+    monkeypatch.setattr("litellm.proxy.auth.auth_checks.get_user_object", cached_lookup)
+
+    assert await _get_caller_org_admin_org_ids(_caller_key()) == [ORG_A]
+    prisma.db.litellm_organizationmembership.find_many.assert_awaited_once_with(
+        where={"user_id": CALLER_ID, "user_role": LitellmUserRoles.ORG_ADMIN.value}
+    )
+    cached_lookup.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_caller_org_admin_ids_empty_without_user_id():
+    from litellm.proxy.management_endpoints.common_utils import (
+        _get_caller_org_admin_org_ids,
+    )
+
+    key = UserAPIKeyAuth(user_id=None, api_key="sk-x")
+    assert await _get_caller_org_admin_org_ids(key) == []
 
 
 # ---------------------------------------------------------------------------

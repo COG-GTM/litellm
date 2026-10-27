@@ -85,38 +85,25 @@ async def _is_user_org_admin_for_team(
 
 async def _get_caller_org_admin_org_ids(user_api_key_dict: UserAPIKeyAuth) -> List[str]:
     """
-    Return the organization IDs where the caller holds the org_admin role,
-    resolved from the caller's DB record (never from the request body).
+    Return the organization IDs where the caller holds the org_admin role.
+    Read from the DB on every call (never from the request body or the user
+    cache) so a revoked org_admin role takes effect immediately.
     """
     if not user_api_key_dict.user_id:
         return []
 
-    from litellm.proxy.auth.auth_checks import get_user_object
-    from litellm.proxy.proxy_server import (
-        prisma_client,
-        proxy_logging_obj,
-        user_api_key_cache,
+    from litellm.proxy.proxy_server import prisma_client
+
+    if prisma_client is None:
+        return []
+
+    memberships = await prisma_client.db.litellm_organizationmembership.find_many(
+        where={
+            "user_id": user_api_key_dict.user_id,
+            "user_role": LitellmUserRoles.ORG_ADMIN.value,
+        }
     )
-
-    try:
-        caller_user = await get_user_object(
-            user_id=user_api_key_dict.user_id,
-            prisma_client=prisma_client,
-            user_api_key_cache=user_api_key_cache,
-            user_id_upsert=False,
-            proxy_logging_obj=proxy_logging_obj,
-        )
-    except ValueError:
-        return []
-    if caller_user is None:
-        return []
-
-    return [
-        m.organization_id
-        for m in caller_user.organization_memberships or []
-        if m.organization_id is not None
-        and m.user_role == LitellmUserRoles.ORG_ADMIN.value
-    ]
+    return [m.organization_id for m in memberships if m.organization_id is not None]
 
 
 async def _assert_user_can_manage_teams(
