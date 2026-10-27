@@ -57,6 +57,7 @@ from litellm.proxy._types import (
     RoleBasedPermissions,
     SpecialModelNames,
     UserAPIKeyAuth,
+    is_valid_token_hash,
 )
 from litellm.proxy.auth.route_checks import RouteChecks
 from litellm.proxy.db.exception_handler import PrismaDBExceptionHandler
@@ -2087,7 +2088,11 @@ async def _fetch_key_object_from_db_with_reconnect(
 ) -> Optional[BaseModel]:
     """
     Fetch key object from DB and retry once if a DB connection error can be healed.
+
+    Returns None without querying when `hashed_token` is not a token hash.
     """
+    if not is_valid_token_hash(hashed_token):
+        return None
     try:
         return await prisma_client.get_data(
             token=hashed_token,
@@ -2182,6 +2187,14 @@ async def get_key_object(
     if check_cache_only:
         raise Exception(
             f"Key doesn't exist in cache + check_cache_only=True. key={key}."
+        )
+
+    if not is_valid_token_hash(hashed_token):
+        raise ProxyException(
+            message="Authentication Error, Invalid proxy server token passed. Key is not a valid token hash.",
+            type=ProxyErrorTypes.token_not_found_in_db,
+            param="key",
+            code=status.HTTP_401_UNAUTHORIZED,
         )
 
     # else, check db

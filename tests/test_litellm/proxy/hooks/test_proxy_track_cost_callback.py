@@ -12,7 +12,7 @@ sys.path.insert(
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from litellm.proxy._types import UserAPIKeyAuth
+from litellm.proxy._types import UserAPIKeyAuth, hash_token
 from litellm.proxy.hooks.proxy_track_cost_callback import _ProxyDBLogger
 from litellm.types.utils import StandardLoggingPayload
 
@@ -282,7 +282,7 @@ async def test_enrich_failure_metadata_with_full_key_lookup():
         return_value=mock_team_obj,
     ):
         metadata = {
-            "user_api_key": "hashed_key",
+            "user_api_key": hash_token("sk-test-key"),
             "user_api_key_alias": None,  # all null - simulates auth error path
             "user_api_key_user_id": None,
             "user_api_key_team_id": None,
@@ -295,6 +295,38 @@ async def test_enrich_failure_metadata_with_full_key_lookup():
         assert result["user_api_key_team_id"] == "fetched-team-id"
         assert result["user_api_key_org_id"] == "fetched-org-id"
         assert result["user_api_key_team_alias"] == "fetched-team-alias"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw_api_key", ["' OR pg_sleep(5)--", "not-a-hash", "hashed-jwt-abc"]
+)
+async def test_enrich_failure_metadata_skips_key_lookup_for_non_hash_api_key(
+    raw_api_key,
+):
+    """
+    Auth failures can carry the caller's raw, unverified bearer value in
+    metadata["user_api_key"]. It must never be used for a key lookup.
+    """
+    with patch(
+        "litellm.proxy.hooks.proxy_track_cost_callback.get_key_object",
+        new_callable=AsyncMock,
+    ) as mock_get_key, patch(
+        "litellm.proxy.hooks.proxy_track_cost_callback.get_team_object",
+        new_callable=AsyncMock,
+    ) as mock_get_team:
+        metadata = {
+            "user_api_key": raw_api_key,
+            "user_api_key_alias": None,
+            "user_api_key_user_id": None,
+            "user_api_key_team_id": None,
+            "user_api_key_team_alias": None,
+            "user_api_key_org_id": None,
+        }
+        result = await _ProxyDBLogger._enrich_failure_metadata_with_key_info(metadata)
+        mock_get_key.assert_not_called()
+        mock_get_team.assert_not_called()
+        assert result["user_api_key_alias"] is None
 
 
 @pytest.mark.asyncio
