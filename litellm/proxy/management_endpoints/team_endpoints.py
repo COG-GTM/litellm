@@ -3097,6 +3097,39 @@ async def team_info(
         )
 
 
+async def _authorize_team_block_change(
+    user_api_key_dict: UserAPIKeyAuth,
+    team_id: str,
+    prisma_client: PrismaClient,
+    route: str,
+) -> None:
+    """Only proxy admins, or org admins of the team's organization, may block/unblock a team."""
+    if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:
+        return
+
+    team_row = await prisma_client.db.litellm_teamtable.find_unique(
+        where={"team_id": team_id}
+    )
+    if team_row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": f"Team not found, passed team_id={team_id}"},
+        )
+
+    if await _is_user_org_admin_for_team(
+        user_api_key_dict=user_api_key_dict,
+        team_obj=LiteLLM_TeamTable(**team_row.model_dump()),
+    ):
+        return
+
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "error": f"Call not allowed. User not proxy admin OR org admin for this team. route={route}, team_id={team_id}"
+        },
+    )
+
+
 @router.post(
     "/team/block", tags=["team management"], dependencies=[Depends(user_api_key_auth)]
 )
@@ -3132,6 +3165,13 @@ async def block_team(
 
     if prisma_client is None:
         raise Exception("No DB Connected.")
+
+    await _authorize_team_block_change(
+        user_api_key_dict=user_api_key_dict,
+        team_id=data.team_id,
+        prisma_client=prisma_client,
+        route="/team/block",
+    )
 
     record = await prisma_client.db.litellm_teamtable.update(
         where={"team_id": data.team_id}, data={"blocked": True}  # type: ignore
@@ -3175,6 +3215,13 @@ async def unblock_team(
 
     if prisma_client is None:
         raise Exception("No DB Connected.")
+
+    await _authorize_team_block_change(
+        user_api_key_dict=user_api_key_dict,
+        team_id=data.team_id,
+        prisma_client=prisma_client,
+        route="/team/unblock",
+    )
 
     record = await prisma_client.db.litellm_teamtable.update(
         where={"team_id": data.team_id}, data={"blocked": False}  # type: ignore
