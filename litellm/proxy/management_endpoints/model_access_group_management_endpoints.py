@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from litellm._logging import verbose_proxy_logger
 from litellm.proxy._types import UserAPIKeyAuth
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.management_endpoints.common_utils import _require_proxy_admin
 
 # Clear cache and reload models to pick up the access group changes
 from litellm.proxy.management_endpoints.model_management_endpoints import (
@@ -285,6 +286,8 @@ async def create_model_group(
     - HTTPException 400: If any model names don't exist
     - HTTPException 500: If database operations fail
     """
+    _require_proxy_admin(user_api_key_dict)
+
     from litellm.proxy.proxy_server import (
         llm_router,
         prisma_client,
@@ -544,6 +547,8 @@ async def update_access_group(
     - HTTPException 400: If any model names don't exist
     - HTTPException 404: If access group not found
     """
+    _require_proxy_admin(user_api_key_dict)
+
     from litellm.proxy.proxy_server import llm_router, prisma_client
 
     if prisma_client is None:
@@ -692,6 +697,8 @@ async def delete_access_group(
     Raises:
     - HTTPException 404: If access group not found
     """
+    _require_proxy_admin(user_api_key_dict)
+
     from litellm.proxy.proxy_server import prisma_client
 
     if prisma_client is None:

@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
+from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
 from litellm.proxy.management_endpoints.fallback_management_endpoints import (
     FallbackCreateRequest,
     create_fallback,
@@ -133,8 +134,8 @@ class TestCreateFallback:
 
     @pytest.fixture
     def mock_user_api_key_dict(self):
-        """Create a mock user API key dict"""
-        return MagicMock()
+        """Create a proxy admin user API key dict"""
+        return UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN)
 
     async def test_create_fallback_success(
         self, mock_router, mock_prisma_client, mock_proxy_config, mock_user_api_key_dict
@@ -325,8 +326,8 @@ class TestGetFallback:
 
     @pytest.fixture
     def mock_user_api_key_dict(self):
-        """Create a mock user API key dict"""
-        return MagicMock()
+        """Create a proxy admin user API key dict"""
+        return UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN)
 
     async def test_get_fallback_success(
         self, mock_router_with_fallbacks, mock_user_api_key_dict
@@ -405,8 +406,8 @@ class TestDeleteFallback:
 
     @pytest.fixture
     def mock_user_api_key_dict(self):
-        """Create a mock user API key dict"""
-        return MagicMock()
+        """Create a proxy admin user API key dict"""
+        return UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN)
 
     async def test_delete_fallback_success(
         self,
@@ -492,3 +493,29 @@ class TestDeleteFallback:
 
         assert exc_info.value.status_code == 400
         assert "Database storage not enabled" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "user_role",
+    [
+        LitellmUserRoles.INTERNAL_USER,
+        LitellmUserRoles.INTERNAL_USER_VIEW_ONLY,
+        LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY,
+        None,
+    ],
+)
+async def test_fallback_mutations_reject_non_proxy_admin(user_role):
+    """create/delete fallback must not rely solely on route checks for authz"""
+    non_admin = UserAPIKeyAuth(user_id="mallory", user_role=user_role)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_fallback(
+            FallbackCreateRequest(model="azure-gpt-4o", fallback_models=["gpt-4"]),
+            non_admin,
+        )
+    assert exc_info.value.status_code == 403
+
+    with pytest.raises(HTTPException) as exc_info:
+        await delete_fallback("azure-gpt-4o", "general", non_admin)
+    assert exc_info.value.status_code == 403

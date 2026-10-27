@@ -7,6 +7,7 @@ POST /fallback - Create or update fallbacks for a specific model
 GET /fallback/{model} - Get fallbacks for a specific model
 DELETE /fallback/{model} - Delete fallbacks for a specific model
 """
+
 # pyright: reportMissingImports=false
 
 import json
@@ -16,6 +17,7 @@ from litellm._logging import verbose_proxy_logger
 from litellm.proxy._types import UserAPIKeyAuth
 from litellm.proxy.auth.model_checks import get_all_fallbacks
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.management_endpoints.common_utils import _require_proxy_admin
 
 if TYPE_CHECKING:
     from fastapi import APIRouter, Depends, HTTPException, status
@@ -67,6 +69,8 @@ async def create_fallback(
     - `context_window`: Fallbacks specifically for context window exceeded errors
     - `content_policy`: Fallbacks specifically for content policy violations
     """
+    _require_proxy_admin(user_api_key_dict)
+
     from litellm.proxy.proxy_server import (
         llm_router,
         prisma_client,
@@ -275,6 +279,8 @@ async def delete_fallback(
     DELETE /fallback/gpt-3.5-turbo?fallback_type=general
     ```
     """
+    _require_proxy_admin(user_api_key_dict)
+
     from litellm.proxy.proxy_server import (
         llm_router,
         prisma_client,
