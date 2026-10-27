@@ -6625,3 +6625,120 @@ class TestBatchResolveAccessGroupResources:
         call_args = fake_find_many.call_args
         assert len(call_args.kwargs["where"]["access_group_id"]["in"]) == 1
         assert "ag-1" in result
+
+
+def _mock_prisma_for_team_block(organization_id: Optional[str] = None):
+    team_row = MagicMock()
+    team_row.model_dump.return_value = {
+        "team_id": "team-1",
+        "organization_id": organization_id,
+    }
+    mock_prisma = MagicMock()
+    mock_prisma.db.litellm_teamtable.find_unique = AsyncMock(return_value=team_row)
+    mock_prisma.db.litellm_teamtable.update = AsyncMock(return_value=team_row)
+    return mock_prisma
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint_name", ["block_team", "unblock_team"])
+@pytest.mark.parametrize(
+    "user_role",
+    [
+        LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY,
+        LitellmUserRoles.INTERNAL_USER,
+        LitellmUserRoles.INTERNAL_USER_VIEW_ONLY,
+    ],
+)
+async def test_block_unblock_team_rejects_non_admins(endpoint_name, user_role):
+    from litellm.proxy._types import BlockTeamRequest
+    from litellm.proxy.management_endpoints import team_endpoints
+
+    mock_prisma = _mock_prisma_for_team_block(organization_id="org-1")
+    endpoint = getattr(team_endpoints, endpoint_name)
+
+    with patch("litellm.proxy.proxy_server.prisma_client", mock_prisma), patch(
+        "litellm.proxy.management_endpoints.team_endpoints._is_user_org_admin_for_team",
+        AsyncMock(return_value=False),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await endpoint(
+                data=BlockTeamRequest(team_id="team-1"),
+                http_request=MagicMock(),
+                user_api_key_dict=UserAPIKeyAuth(user_id="u-1", user_role=user_role),
+            )
+
+    assert exc_info.value.status_code == 403
+    mock_prisma.db.litellm_teamtable.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "endpoint_name,expected_blocked", [("block_team", True), ("unblock_team", False)]
+)
+async def test_block_unblock_team_allows_proxy_admin(endpoint_name, expected_blocked):
+    from litellm.proxy._types import BlockTeamRequest
+    from litellm.proxy.management_endpoints import team_endpoints
+
+    mock_prisma = _mock_prisma_for_team_block()
+    endpoint = getattr(team_endpoints, endpoint_name)
+
+    with patch("litellm.proxy.proxy_server.prisma_client", mock_prisma):
+        await endpoint(
+            data=BlockTeamRequest(team_id="team-1"),
+            http_request=MagicMock(),
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="admin", user_role=LitellmUserRoles.PROXY_ADMIN
+            ),
+        )
+
+    mock_prisma.db.litellm_teamtable.update.assert_awaited_once_with(
+        where={"team_id": "team-1"}, data={"blocked": expected_blocked}
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint_name", ["block_team", "unblock_team"])
+async def test_block_unblock_team_allows_org_admin_of_team_org(endpoint_name):
+    from litellm.proxy._types import BlockTeamRequest
+    from litellm.proxy.management_endpoints import team_endpoints
+
+    mock_prisma = _mock_prisma_for_team_block(organization_id="org-1")
+    endpoint = getattr(team_endpoints, endpoint_name)
+    org_admin_check = AsyncMock(return_value=True)
+
+    with patch("litellm.proxy.proxy_server.prisma_client", mock_prisma), patch(
+        "litellm.proxy.management_endpoints.team_endpoints._is_user_org_admin_for_team",
+        org_admin_check,
+    ):
+        await endpoint(
+            data=BlockTeamRequest(team_id="team-1"),
+            http_request=MagicMock(),
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="org-admin", user_role=LitellmUserRoles.INTERNAL_USER
+            ),
+        )
+
+    assert org_admin_check.await_args.kwargs["team_obj"].organization_id == "org-1"
+    mock_prisma.db.litellm_teamtable.update.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_block_team_unknown_team_returns_404_for_non_admin():
+    from litellm.proxy._types import BlockTeamRequest
+    from litellm.proxy.management_endpoints.team_endpoints import block_team
+
+    mock_prisma = _mock_prisma_for_team_block()
+    mock_prisma.db.litellm_teamtable.find_unique = AsyncMock(return_value=None)
+
+    with patch("litellm.proxy.proxy_server.prisma_client", mock_prisma):
+        with pytest.raises(HTTPException) as exc_info:
+            await block_team(
+                data=BlockTeamRequest(team_id="missing"),
+                http_request=MagicMock(),
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_id="u-1", user_role=LitellmUserRoles.INTERNAL_USER
+                ),
+            )
+
+    assert exc_info.value.status_code == 404
+    mock_prisma.db.litellm_teamtable.update.assert_not_called()

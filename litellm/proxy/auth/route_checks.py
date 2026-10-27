@@ -6,6 +6,7 @@ from fastapi import HTTPException, Request, status
 from litellm._logging import verbose_proxy_logger
 from litellm.proxy._types import (
     CommonProxyErrors,
+    KeyManagementRoutes,
     LiteLLM_UserTable,
     LiteLLMRoutes,
     LitellmUserRoles,
@@ -594,6 +595,29 @@ class RouteChecks:
             return True
         return False
 
+    # Read-only management routes PROXY_ADMIN_VIEW_ONLY may call. Every other
+    # management route (except restricted /user/update) is denied.
+    _PROXY_ADMIN_VIEWER_READ_MANAGEMENT_ROUTES = frozenset(
+        [
+            "/user/info",
+            "/user/list",
+            "/user/daily/activity",
+            "/user/daily/activity/aggregated",
+            "/team/list",
+            "/v2/team/list",
+            "/team/info",
+            "/team/available",
+            "/team/permissions_list",
+            "/team/daily/activity",
+            "/model/info",
+            "/jwt/key/mapping/list",
+            "/jwt/key/mapping/info",
+            KeyManagementRoutes.KEY_INFO.value,
+            KeyManagementRoutes.KEY_LIST.value,
+            KeyManagementRoutes.KEY_ALIASES.value,
+        ]
+    )
+
     @staticmethod
     def _check_proxy_admin_viewer_access(
         route: str,
@@ -624,30 +648,8 @@ class RouteChecks:
                                 status_code=status.HTTP_403_FORBIDDEN,
                                 detail=f"user not allowed to access this route, role= {_user_role}. Trying to access: {route} and updating invalid param: {param}. only user_email and password can be updated",
                             )
-            elif (
-                route
-                in [
-                    "/user/new",
-                    "/user/delete",
-                    "/user/bulk_update",
-                    "/team/new",
-                    "/team/update",
-                    "/team/delete",
-                    "/model/new",
-                    "/model/update",
-                    "/model/delete",
-                    "/key/generate",
-                    "/key/delete",
-                    "/key/update",
-                    "/key/regenerate",
-                    "/key/service-account/generate",
-                    "/key/block",
-                    "/key/unblock",
-                ]
-                or route.startswith("/key/")
-                and route.endswith("/regenerate")
-            ):
-                # Block write operations for PROXY_ADMIN_VIEW_ONLY
+            elif route not in RouteChecks._PROXY_ADMIN_VIEWER_READ_MANAGEMENT_ROUTES:
+                # Any management route that is not explicitly read-only is a write
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"user not allowed to access this route, role= {_user_role}. Trying to access: {route}",

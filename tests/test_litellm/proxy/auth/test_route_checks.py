@@ -1432,3 +1432,91 @@ async def test_initialize_pass_through_registers_wildcard_for_auth_subpath():
             InitPassThroughEndpointHelpers.remove_endpoint_routes(
                 k.split(":")[0]
             )
+
+
+def _call_route_check_as_proxy_admin_viewer(route: str, request_data: dict):
+    user_obj = LiteLLM_UserTable(
+        user_id="viewer_user",
+        user_email="viewer@example.com",
+        user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+    )
+    valid_token = UserAPIKeyAuth(
+        user_id="viewer_user",
+        user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+    )
+    request = MagicMock(spec=Request)
+    request.query_params = {}
+    RouteChecks.non_proxy_admin_allowed_routes_check(
+        user_obj=user_obj,
+        _user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+        route=route,
+        request=request,
+        valid_token=valid_token,
+        request_data=request_data,
+    )
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/team/block",
+        "/team/unblock",
+        "/team/permissions_update",
+        "/team/new",
+        "/team/update",
+        "/team/delete",
+        "/user/new",
+        "/user/delete",
+        "/model/new",
+        "/key/generate",
+        "/key/block",
+        "/key/unblock",
+        "/key/bulk_update",
+        "/key/sk-1234/regenerate",
+        "/key/sk-1234/reset_spend",
+        "/jwt/key/mapping/new",
+        "/jwt/key/mapping/update",
+        "/jwt/key/mapping/delete",
+    ],
+)
+def test_proxy_admin_viewer_cannot_call_management_write_routes(route):
+    with pytest.raises(HTTPException) as exc_info:
+        _call_route_check_as_proxy_admin_viewer(
+            route=route, request_data={"team_id": "team-1"}
+        )
+    assert exc_info.value.status_code == 403
+    assert "role= proxy_admin_viewer" in str(exc_info.value.detail)
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/user/info",
+        "/user/list",
+        "/team/list",
+        "/v2/team/list",
+        "/team/info",
+        "/team/available",
+        "/team/permissions_list",
+        "/team/daily/activity",
+        "/model/info",
+        "/key/info",
+        "/key/list",
+        "/key/aliases",
+        "/jwt/key/mapping/list",
+        "/jwt/key/mapping/info",
+    ],
+)
+def test_proxy_admin_viewer_can_call_management_read_routes(route):
+    _call_route_check_as_proxy_admin_viewer(route=route, request_data={})
+
+
+def test_proxy_admin_viewer_user_update_restricted_params():
+    _call_route_check_as_proxy_admin_viewer(
+        route="/user/update", request_data={"user_email": "a@b.com"}
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        _call_route_check_as_proxy_admin_viewer(
+            route="/user/update", request_data={"user_role": "proxy_admin"}
+        )
+    assert exc_info.value.status_code == 403
