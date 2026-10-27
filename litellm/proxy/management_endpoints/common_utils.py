@@ -1,4 +1,6 @@
-from typing import TYPE_CHECKING, Any, Dict, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Union
+
+from fastapi import HTTPException
 
 from litellm._logging import verbose_proxy_logger
 from litellm.caching import DualCache
@@ -79,6 +81,94 @@ async def _is_user_org_admin_for_team(
             return True
 
     return False
+
+
+async def _get_caller_org_admin_org_ids(user_api_key_dict: UserAPIKeyAuth) -> List[str]:
+    """
+    Return the organization IDs where the caller holds the org_admin role.
+    Read from the DB on every call (never from the request body or the user
+    cache) so a revoked org_admin role takes effect immediately.
+    """
+    if not user_api_key_dict.user_id:
+        return []
+
+    from litellm.proxy.proxy_server import prisma_client
+
+    if prisma_client is None:
+        return []
+
+    memberships = await prisma_client.db.litellm_organizationmembership.find_many(
+        where={
+            "user_id": user_api_key_dict.user_id,
+            "user_role": LitellmUserRoles.ORG_ADMIN.value,
+        }
+    )
+    return [m.organization_id for m in memberships if m.organization_id is not None]
+
+
+async def _assert_user_can_manage_teams(
+    user_api_key_dict: UserAPIKeyAuth,
+    teams: Sequence[LiteLLM_TeamTable],
+    route: str,
+) -> None:
+    """
+    Allow proxy admins, or org admins when every target team belongs to an
+    organization the caller administers. Raises 403 otherwise.
+    """
+    if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:
+        return
+
+    admin_org_ids = set(await _get_caller_org_admin_org_ids(user_api_key_dict))
+    for team in teams:
+        if team.organization_id is None or team.organization_id not in admin_org_ids:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "Call not allowed. User must be a proxy admin or an org admin of the team's organization. route={}, team_id={}".format(
+                        route, team.team_id
+                    )
+                },
+            )
+
+
+async def _assert_user_can_delete_users(
+    user_api_key_dict: UserAPIKeyAuth,
+    users: Sequence[LiteLLM_UserTable],
+    route: str,
+) -> None:
+    """
+    Allow proxy admins, or org admins when every target user is a non-admin
+    whose organization memberships are all in organizations the caller
+    administers. Raises 403 otherwise.
+    """
+    if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:
+        return
+
+    admin_org_ids = set(await _get_caller_org_admin_org_ids(user_api_key_dict))
+    for user in users:
+        target_org_ids = {
+            m.organization_id
+            for m in user.organization_memberships or []
+            if m.organization_id is not None
+        }
+        if (
+            not admin_org_ids
+            or user.user_role
+            in (
+                LitellmUserRoles.PROXY_ADMIN.value,
+                LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+            )
+            or not target_org_ids
+            or not target_org_ids.issubset(admin_org_ids)
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "Call not allowed. User must be a proxy admin or an org admin of every organization the target user belongs to. route={}, user_id={}".format(
+                        route, user.user_id
+                    )
+                },
+            )
 
 
 def _team_member_has_permission(

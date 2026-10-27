@@ -33,6 +33,8 @@ from litellm.proxy.management_endpoints.common_daily_activity import (
     get_daily_activity_aggregated,
 )
 from litellm.proxy.management_endpoints.common_utils import (
+    _assert_user_can_delete_users,
+    _get_caller_org_admin_org_ids,
     _is_user_team_admin,
     _user_has_admin_view,
 )
@@ -342,6 +344,28 @@ async def add_new_user_to_default_team(
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
+async def _assert_user_can_add_to_organizations(
+    user_api_key_dict: UserAPIKeyAuth,
+    organization_ids: List[str],
+) -> None:
+    """
+    Non proxy-admins may only add new users to organizations they administer.
+    """
+    if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:
+        return
+    admin_org_ids = set(await _get_caller_org_admin_org_ids(user_api_key_dict))
+    unauthorized = [o for o in organization_ids if o not in admin_org_ids]
+    if unauthorized:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "Call not allowed. User must be an org admin of every organization the new user is added to. Unauthorized organizations={}".format(
+                    unauthorized
+                )
+            },
+        )
+
+
 @router.post(
     "/user/new",
     tags=["Internal User management"],
@@ -461,6 +485,11 @@ async def new_user(
         organization_ids = cast(
             Optional[List[str]], data_json.pop("organizations", None)
         )
+        if organization_ids:
+            await _assert_user_can_add_to_organizations(
+                user_api_key_dict=user_api_key_dict,
+                organization_ids=organization_ids,
+            )
 
         response = await generate_key_helper_fn(request_type="user", **data_json)
         # Admin UI Logic
@@ -1514,6 +1543,13 @@ async def bulk_user_update(
     ] = []
 
     if data.all_users and data.user_updates:
+        if user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "Call not allowed. Only PROXY_ADMIN can update all users."
+                },
+            )
         # Optimized path for updating all users directly in database
         all_users_in_db = await prisma_client.db.litellm_usertable.find_many(
             order={"created_at": "desc"}
@@ -2023,6 +2059,23 @@ async def delete_user(
 
     if data.user_ids is None:
         raise HTTPException(status_code=400, detail={"error": "No user id passed in"})
+
+    target_user_rows = await prisma_client.db.litellm_usertable.find_many(
+        where={"user_id": {"in": data.user_ids}},
+        include={"organization_memberships": True},
+    )
+    found_user_ids = {row.user_id for row in target_user_rows}
+    for user_id in data.user_ids:
+        if user_id not in found_user_ids:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": f"User not found, passed user_id={user_id}"},
+            )
+    await _assert_user_can_delete_users(
+        user_api_key_dict=user_api_key_dict,
+        users=[LiteLLM_UserTable(**row.model_dump()) for row in target_user_rows],
+        route="/user/delete",
+    )
 
     # check that all teams passed exist
     for user_id in data.user_ids:
