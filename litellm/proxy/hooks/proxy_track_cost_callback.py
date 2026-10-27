@@ -15,6 +15,7 @@ from litellm.proxy._types import UserAPIKeyAuth
 from litellm.proxy.auth.auth_checks import (
     get_key_object,
     get_team_object,
+    is_valid_hashed_token,
     log_db_metrics,
 )
 from litellm.proxy.auth.route_checks import RouteChecks
@@ -307,8 +308,11 @@ class _ProxyDBLogger(CustomLogger):
             user_api_key_cache,
         )
 
-        # Step 1: If key fields are missing, look up the full key object
-        if metadata.get("user_api_key_alias") is None:
+        # Step 1: If key fields are missing, look up the full key object.
+        # Skip values that aren't key hashes (e.g. raw credentials from failed auth).
+        if metadata.get("user_api_key_alias") is None and is_valid_hashed_token(
+            api_key_hash
+        ):
             try:
                 key_obj = await get_key_object(
                     hashed_token=api_key_hash,

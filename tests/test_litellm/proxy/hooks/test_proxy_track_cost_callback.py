@@ -247,7 +247,7 @@ async def test_enrich_failure_metadata_with_team_alias():
         return_value=mock_team_obj,
     ):
         metadata = {
-            "user_api_key": "hashed_key",
+            "user_api_key": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "user_api_key_alias": "my-key-alias",  # already set
             "user_api_key_team_id": "test_team_id",
             "user_api_key_team_alias": None,
@@ -282,7 +282,7 @@ async def test_enrich_failure_metadata_with_full_key_lookup():
         return_value=mock_team_obj,
     ):
         metadata = {
-            "user_api_key": "hashed_key",
+            "user_api_key": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "user_api_key_alias": None,  # all null - simulates auth error path
             "user_api_key_user_id": None,
             "user_api_key_team_id": None,
@@ -311,7 +311,7 @@ async def test_enrich_failure_metadata_skips_when_team_alias_present():
         new_callable=AsyncMock,
     ) as mock_get_team:
         metadata = {
-            "user_api_key": "hashed_key",
+            "user_api_key": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "user_api_key_alias": "existing-alias",
             "user_api_key_team_id": "test_team_id",
             "user_api_key_team_alias": "already-set",
@@ -353,7 +353,7 @@ async def test_async_post_call_failure_hook_enriches_auth_error_metadata():
 
     # This is what auth_exception_handler creates for 401 errors
     user_api_key_dict = UserAPIKeyAuth(
-        api_key="hashed_key",
+        api_key="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         # key_alias, user_id, team_id, team_alias are all None
     )
 
@@ -543,3 +543,30 @@ async def test_async_post_call_failure_hook_uses_actual_start_time():
         # Duration should be approximately 60 seconds, not 0
         duration = (call_args["end_time"] - call_args["start_time"]).total_seconds()
         assert duration >= 55, f"Duration should be ~60s, got {duration}s"
+
+
+@pytest.mark.asyncio
+async def test_enrich_failure_metadata_skips_key_lookup_for_non_hash_api_key():
+    """
+    On auth failures the raw Authorization value can end up in user_api_key.
+    It must never be forwarded to get_key_object (and thus the DB).
+    """
+    with patch(
+        "litellm.proxy.hooks.proxy_track_cost_callback.get_key_object",
+        new_callable=AsyncMock,
+    ) as mock_get_key, patch(
+        "litellm.proxy.hooks.proxy_track_cost_callback.get_team_object",
+        new_callable=AsyncMock,
+    ) as mock_get_team:
+        metadata = {
+            "user_api_key": "' OR pg_sleep(5)--",
+            "user_api_key_alias": None,
+            "user_api_key_user_id": None,
+            "user_api_key_team_id": None,
+            "user_api_key_team_alias": None,
+            "user_api_key_org_id": None,
+        }
+        result = await _ProxyDBLogger._enrich_failure_metadata_with_key_info(metadata)
+        assert result["user_api_key_alias"] is None
+        mock_get_key.assert_not_called()
+        mock_get_team.assert_not_called()

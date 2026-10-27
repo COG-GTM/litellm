@@ -2079,6 +2079,16 @@ class ExperimentalUIJWTToken:
             )
 
 
+_HASHED_TOKEN_REGEX = re.compile(r"[0-9a-f]{64}")
+
+
+def is_valid_hashed_token(token: Any) -> bool:
+    """
+    Return True if `token` looks like a LiteLLM virtual key hash (SHA-256 hex digest).
+    """
+    return isinstance(token, str) and _HASHED_TOKEN_REGEX.fullmatch(token) is not None
+
+
 async def _fetch_key_object_from_db_with_reconnect(
     hashed_token: str,
     prisma_client: PrismaClient,
@@ -2088,6 +2098,8 @@ async def _fetch_key_object_from_db_with_reconnect(
     """
     Fetch key object from DB and retry once if a DB connection error can be healed.
     """
+    if not is_valid_hashed_token(hashed_token):
+        return None
     try:
         return await prisma_client.get_data(
             token=hashed_token,
@@ -2182,6 +2194,14 @@ async def get_key_object(
     if check_cache_only:
         raise Exception(
             f"Key doesn't exist in cache + check_cache_only=True. key={key}."
+        )
+
+    if not is_valid_hashed_token(hashed_token):
+        raise ProxyException(
+            message="Authentication Error, Invalid proxy server token passed. Token is not a valid key hash. Create key via `/key/generate` call.",
+            type=ProxyErrorTypes.token_not_found_in_db,
+            param="key",
+            code=status.HTTP_401_UNAUTHORIZED,
         )
 
     # else, check db

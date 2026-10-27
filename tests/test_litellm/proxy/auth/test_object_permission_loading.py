@@ -30,7 +30,7 @@ async def test_get_key_object_loads_object_permission():
     # Mock the DB response with object_permission_id but no object_permission
     mock_token_data = MagicMock()
     mock_token_data.model_dump.return_value = {
-        "token": "test_token_hash",
+        "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "user_id": "test_user",
         "object_permission_id": "test_perm_id",
         "object_permission": None,
@@ -61,7 +61,7 @@ async def test_get_key_object_loads_object_permission():
         mock_proxy_logging_obj
     ):
         result = await get_key_object(
-            hashed_token="test_token_hash",
+            hashed_token="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             prisma_client=mock_prisma_client,
             user_api_key_cache=mock_cache,
         )
@@ -85,7 +85,7 @@ async def test_get_key_object_no_permission_id():
     # Mock the DB response without object_permission_id
     mock_token_data = MagicMock()
     mock_token_data.model_dump.return_value = {
-        "token": "test_token_hash",
+        "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "user_id": "test_user",
         "object_permission_id": None,
         "object_permission": None,
@@ -105,7 +105,7 @@ async def test_get_key_object_no_permission_id():
         mock_proxy_logging_obj
     ):
         result = await get_key_object(
-            hashed_token="test_token_hash",
+            hashed_token="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             prisma_client=mock_prisma_client,
             user_api_key_cache=mock_cache,
         )

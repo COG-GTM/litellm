@@ -39,6 +39,7 @@ from litellm.proxy.auth.auth_checks import (
     _virtual_key_soft_budget_check,
     get_key_object,
     get_user_object,
+    is_valid_hashed_token,
     vector_store_access_check,
 )
 from litellm.proxy.common_utils.encrypt_decrypt_utils import decrypt_value_helper
@@ -207,7 +208,7 @@ async def test_get_key_object_should_reconnect_once_on_db_connection_error():
     mock_prisma_client.get_data = AsyncMock(
         side_effect=[
             httpx.ConnectError("db connection reset"),
-            UserAPIKeyAuth(token="hashed-token-1"),
+            UserAPIKeyAuth(token="1111111111111111111111111111111111111111111111111111111111111111"),
         ]
     )
     mock_prisma_client.attempt_db_reconnect = AsyncMock(return_value=True)
@@ -217,12 +218,12 @@ async def test_get_key_object_should_reconnect_once_on_db_connection_error():
     mock_cache.async_set_cache = AsyncMock()
 
     key_obj = await get_key_object(
-        hashed_token="hashed-token-1",
+        hashed_token="1111111111111111111111111111111111111111111111111111111111111111",
         prisma_client=mock_prisma_client,
         user_api_key_cache=mock_cache,
     )
 
-    assert key_obj.token == "hashed-token-1"
+    assert key_obj.token == "1111111111111111111111111111111111111111111111111111111111111111"
     assert mock_prisma_client.get_data.await_count == 2
     mock_prisma_client.attempt_db_reconnect.assert_awaited_once_with(
         reason="auth_get_key_object_lookup_failure",
@@ -245,7 +246,7 @@ async def test_get_key_object_should_raise_if_reconnect_fails_on_db_connection_e
 
     with pytest.raises(Exception, match="db not reachable after outage"):
         await get_key_object(
-            hashed_token="hashed-token-2",
+            hashed_token="2222222222222222222222222222222222222222222222222222222222222222",
             prisma_client=mock_prisma_client,
             user_api_key_cache=mock_cache,
         )
@@ -313,7 +314,6 @@ def test_get_cli_jwt_auth_token_custom_expiration(
     expires = datetime.fromisoformat(token_data["expires"].replace("Z", "+00:00"))
     assert expires > get_utc_datetime() + timedelta(hours=47, minutes=59)
     assert expires <= get_utc_datetime() + timedelta(hours=48, minutes=1)
-
 
 
 @pytest.mark.asyncio
@@ -1780,3 +1780,47 @@ async def test_team_member_budget_check_reads_from_spend_counter():
                 proxy_logging_obj=proxy_logging_obj,
             )
         assert exc_info.value.current_cost == 1.5
+
+
+@pytest.mark.parametrize(
+    "token,expected",
+    [
+        ("a" * 64, True),
+        ("0123456789abcdef" * 4, True),
+        ("a" * 63, False),
+        ("A" * 64, False),
+        ("sk-1234", False),
+        ("' OR pg_sleep(5)--", False),
+        ("a" * 64 + "' OR '1'='1", False),
+        (None, False),
+        (123, False),
+    ],
+)
+def test_is_valid_hashed_token(token, expected):
+    assert is_valid_hashed_token(token) is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "malicious_token",
+    ["' OR pg_sleep(5)--", 'x\' UNION SELECT * FROM "LiteLLM_UserTable"--'],
+)
+async def test_get_key_object_rejects_non_hash_token_without_db_lookup(
+    malicious_token,
+):
+    mock_prisma_client = MagicMock()
+    mock_prisma_client.get_data = AsyncMock()
+
+    mock_cache = MagicMock()
+    mock_cache.async_get_cache = AsyncMock(return_value=None)
+
+    with pytest.raises(ProxyException) as exc_info:
+        await get_key_object(
+            hashed_token=malicious_token,
+            prisma_client=mock_prisma_client,
+            user_api_key_cache=mock_cache,
+        )
+
+    assert exc_info.value.code == "401"
+    assert malicious_token not in exc_info.value.message
+    mock_prisma_client.get_data.assert_not_called()

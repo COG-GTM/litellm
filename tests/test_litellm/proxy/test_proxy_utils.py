@@ -15,7 +15,7 @@ sys.path.insert(
 )  # Adds the parent directory to the system path
 
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from litellm.proxy.utils import get_custom_url, join_paths
 
@@ -190,3 +190,35 @@ def test_get_projected_spend_over_limit_includes_current_spend(monkeypatch):
     projected_spend, projected_exceeded_date = result
     assert projected_spend == 290.0
     assert projected_exceeded_date == real_datetime.date(2026, 4, 21)
+
+
+@pytest.mark.asyncio
+async def test_get_data_combined_view_binds_token_as_query_parameter():
+    """
+    The combined_view token lookup must bind the token as a parameter instead of
+    interpolating it into the SQL string (SQL injection).
+    """
+    from litellm.proxy.utils import PrismaClient
+
+    malicious_token = "' OR pg_sleep(5)--"
+    prisma_client = PrismaClient.__new__(PrismaClient)
+    prisma_client.db = MagicMock()
+    prisma_client.db.query_first = AsyncMock(return_value=None)
+
+    with patch(
+        "litellm.proxy.utils._lookup_deprecated_key",
+        new=AsyncMock(return_value=None),
+    ):
+        response = await prisma_client.get_data(
+            token=malicious_token,
+            table_name="combined_view",
+            query_type="find_unique",
+        )
+
+    assert response is None
+    prisma_client.db.query_first.assert_awaited_once()
+    call_args = prisma_client.db.query_first.await_args
+    sql_query = call_args.args[0]
+    assert "WHERE v.token = $1" in sql_query
+    assert malicious_token not in sql_query
+    assert call_args.args[1:] == (malicious_token,)
