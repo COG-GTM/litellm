@@ -1136,6 +1136,7 @@ async def fetch_and_validate_organization(
     existing_team_row: Any,
     llm_router: Optional[Router],
     prisma_client: Any,
+    proposed_max_budget: Optional[float] = None,
 ) -> Any:
     """
     Fetch and validate an organization for team update operations.
@@ -1145,6 +1146,7 @@ async def fetch_and_validate_organization(
         existing_team_row: The existing team row being updated
         llm_router: The LLM router instance
         prisma_client: The Prisma database client
+        proposed_max_budget: The team max_budget from the same update request, if any
 
     Returns:
         The organization row from the database
@@ -1170,8 +1172,12 @@ async def fetch_and_validate_organization(
             },
         )
 
+    team_fields = existing_team_row.model_dump()
+    if proposed_max_budget is not None:
+        team_fields = {**team_fields, "max_budget": proposed_max_budget}
+
     validate_team_org_change(
-        team=LiteLLM_TeamTable(**existing_team_row.model_dump()),
+        team=LiteLLM_TeamTable(**team_fields),
         organization=LiteLLM_OrganizationTableWithMembers(
             **organization_row.model_dump()
         ),
@@ -1450,6 +1456,7 @@ async def update_team(  # noqa: PLR0915
                 existing_team_row=existing_team_row,
                 llm_router=llm_router,
                 prisma_client=prisma_client,
+                proposed_max_budget=data.max_budget,
             )
         elif data.organization_id is not None and len(data.organization_id) == 0:
             # unsetting the organization_id

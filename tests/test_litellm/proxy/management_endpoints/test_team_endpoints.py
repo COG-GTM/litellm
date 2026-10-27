@@ -38,6 +38,7 @@ from litellm.proxy.management_endpoints.team_endpoints import (
     _transform_teams_to_deleted_records,
     _validate_and_populate_member_user_info,
     delete_team,
+    fetch_and_validate_organization,
     list_available_teams,
     router,
     team_member_add_duplication_check,
@@ -163,6 +164,52 @@ def test_validate_team_org_change_rejects_budget_above_zero_org_budget():
 
     assert exc_info.value.status_code == 403
     assert "max_budget" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "proposed_max_budget,expected_team_max_budget",
+    [(0.0, 0.0), (None, 10.0)],
+)
+async def test_fetch_and_validate_organization_uses_proposed_max_budget(
+    proposed_max_budget, expected_team_max_budget
+):
+    """
+    When a team update changes organization_id and max_budget together, the org
+    validation must use the requested max_budget (falling back to the existing one).
+    """
+    existing_team_row = LiteLLM_TeamTable(
+        team_id="team-1", organization_id=None, max_budget=10.0
+    )
+    organization_row = MagicMock()
+    organization_row.model_dump.return_value = {
+        "organization_id": "zero-budget-org",
+        "budget_id": "budget-zero",
+        "spend": 0.0,
+        "models": [],
+        "created_by": "test",
+        "updated_by": "test",
+        "litellm_budget_table": {"max_budget": 0.0},
+        "members": [],
+    }
+    prisma_client = MagicMock()
+    prisma_client.db.litellm_organizationtable.find_unique = AsyncMock(
+        return_value=organization_row
+    )
+
+    with patch(
+        "litellm.proxy.management_endpoints.team_endpoints.validate_team_org_change"
+    ) as mock_validate:
+        await fetch_and_validate_organization(
+            organization_id="zero-budget-org",
+            existing_team_row=existing_team_row,
+            llm_router=MagicMock(spec=Router),
+            prisma_client=prisma_client,
+            proposed_max_budget=proposed_max_budget,
+        )
+
+    validated_team = mock_validate.call_args.kwargs["team"]
+    assert validated_team.max_budget == expected_team_max_budget
 
 
 @pytest.mark.asyncio
