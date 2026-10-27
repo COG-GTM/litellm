@@ -13,6 +13,7 @@ from litellm.litellm_core_utils.litellm_logging import _get_masked_values
 from litellm.proxy._types import CommonProxyErrors, UserAPIKeyAuth
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.common_utils.encrypt_decrypt_utils import encrypt_value_helper
+from litellm.proxy.management_endpoints.common_utils import _require_proxy_admin
 from litellm.proxy.utils import handle_exception_on_proxy, jsonify_object
 from litellm.types.utils import CreateCredentialItem, CredentialItem
 
@@ -56,6 +57,8 @@ async def create_credential(
     Stores credential in DB.
     Reloads credentials in memory.
     """
+    _require_proxy_admin(user_api_key_dict)
+
     from litellm.proxy.proxy_server import llm_router, prisma_client
 
     try:
@@ -237,6 +240,8 @@ async def delete_credential(
     """
     [BETA] endpoint. This might change unexpectedly.
     """
+    _require_proxy_admin(user_api_key_dict)
+
     from litellm.proxy.proxy_server import prisma_client
 
     try:
@@ -318,6 +323,8 @@ async def update_credential(
     """
     [BETA] endpoint. This might change unexpectedly.
     """
+    _require_proxy_admin(user_api_key_dict)
+
     from litellm.proxy.proxy_server import prisma_client
 
     try:

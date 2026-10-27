@@ -13,6 +13,7 @@ sys.path.insert(
 )  # Adds the parent directory to the system path
 
 from litellm import Router
+from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
 
 
 @pytest.mark.asyncio
@@ -288,3 +289,65 @@ async def test_create_access_group_invalid_model_id_returns_400():
             await create_model_group(data=request_data, user_api_key_dict=mock_user)
         assert exc_info.value.status_code == 400
         assert "non-existent-id" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "user_role",
+    [
+        LitellmUserRoles.INTERNAL_USER,
+        LitellmUserRoles.INTERNAL_USER_VIEW_ONLY,
+        LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY,
+        None,
+    ],
+)
+async def test_access_group_mutations_reject_non_proxy_admin(user_role):
+    """
+    create/update/delete access group must reject non-admins in the handler,
+    not only via route classification (e.g. /access_group/openai-models/update).
+    """
+    from fastapi import HTTPException
+
+    from litellm.proxy.management_endpoints.model_access_group_management_endpoints import (
+        create_model_group,
+        delete_access_group,
+        update_access_group,
+    )
+    from litellm.types.proxy.management_endpoints.model_management_endpoints import (
+        NewModelGroupRequest,
+        UpdateModelGroupRequest,
+    )
+
+    non_admin = UserAPIKeyAuth(user_id="mallory", user_role=user_role)
+    mock_prisma = MagicMock()
+    mock_prisma.db.litellm_proxymodeltable.find_many = AsyncMock(return_value=[])
+    mock_prisma.db.litellm_proxymodeltable.update = AsyncMock()
+
+    with patch("litellm.proxy.proxy_server.prisma_client", mock_prisma), patch(
+        "litellm.proxy.proxy_server.llm_router", MagicMock()
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await update_access_group(
+                access_group="openai-models",
+                data=UpdateModelGroupRequest(model_names=["gpt-4"]),
+                user_api_key_dict=non_admin,
+            )
+        assert exc_info.value.status_code == 403
+
+        with pytest.raises(HTTPException) as exc_info:
+            await delete_access_group(
+                access_group="openai-models", user_api_key_dict=non_admin
+            )
+        assert exc_info.value.status_code == 403
+
+        with pytest.raises(HTTPException) as exc_info:
+            await create_model_group(
+                data=NewModelGroupRequest(
+                    access_group="openai-models", model_names=["gpt-4"]
+                ),
+                user_api_key_dict=non_admin,
+            )
+        assert exc_info.value.status_code == 403
+
+    mock_prisma.db.litellm_proxymodeltable.find_many.assert_not_called()
+    mock_prisma.db.litellm_proxymodeltable.update.assert_not_called()

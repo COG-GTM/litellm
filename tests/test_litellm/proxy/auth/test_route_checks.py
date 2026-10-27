@@ -1432,3 +1432,82 @@ async def test_initialize_pass_through_registers_wildcard_for_auth_subpath():
             InitPassThroughEndpointHelpers.remove_endpoint_routes(
                 k.split(":")[0]
             )
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/credentials/azure-prod",
+        "/credentials/openai-key",
+        "/credentials/by_name/bedrock-creds",
+        "/access_group/openai-models/update",
+        "/access_group/anthropic-models/delete",
+        "/access_group/gemini-models/info",
+        "/fallback/azure-gpt-4o",
+        "/model/vertex_ai-model/update",
+        "/team/mistral-team/info",
+        "/openai-proxy/v1/chat/completions",
+        "/azurex/chat/completions",
+    ],
+)
+def test_management_route_containing_provider_name_is_not_llm_api_route(route):
+    """
+    Pass-through prefixes (/azure, /openai, ...) must only match as a leading
+    path segment, not as a substring anywhere in the route.
+    """
+    assert RouteChecks.is_llm_api_route(route=route) is False
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/azure",
+        "/azure/openai/deployments/x/chat/completions",
+        "/openai/v1/chat/completions",
+        "/openai_passthrough/v1/responses",
+        "/anthropic/v1/messages",
+        "/bedrock/model/claude/invoke",
+        "/vertex_ai/v1/projects/p/locations/l/publishers/google/models/g:generateContent",
+        "/eu.assemblyai/v2/transcript",
+    ],
+)
+def test_pass_through_routes_still_llm_api_routes(route):
+    assert RouteChecks.is_llm_api_route(route=route) is True
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/credentials/azure-prod",
+        "/access_group/openai-models/update",
+        "/access_group/openai-models/delete",
+        "/fallback/azure-gpt-4o",
+    ],
+)
+def test_non_admin_cannot_reach_admin_route_with_provider_name_in_path(route):
+    """
+    Regression: a non-admin key calling e.g. PATCH /credentials/azure-prod used
+    to be classified as an LLM pass-through route and skip the admin-only check.
+    """
+    user_obj = LiteLLM_UserTable(
+        user_id="mallory",
+        user_email="mallory@example.com",
+        user_role=LitellmUserRoles.INTERNAL_USER.value,
+    )
+    valid_token = UserAPIKeyAuth(
+        user_id="mallory", user_role=LitellmUserRoles.INTERNAL_USER.value
+    )
+    request = MagicMock(spec=Request)
+    request.query_params = {}
+
+    with pytest.raises(Exception) as exc_info:
+        RouteChecks.non_proxy_admin_allowed_routes_check(
+            user_obj=user_obj,
+            _user_role=LitellmUserRoles.INTERNAL_USER.value,
+            route=route,
+            request=request,
+            valid_token=valid_token,
+            request_data={},
+        )
+    assert "Only proxy admin" in str(exc_info.value)
+    assert f"Route={route}" in str(exc_info.value)

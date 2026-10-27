@@ -1,8 +1,11 @@
 from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
+from fastapi import HTTPException, status
+
 from litellm._logging import verbose_proxy_logger
 from litellm.caching import DualCache
 from litellm.proxy._types import (
+    CommonProxyErrors,
     KeyRequestBase,
     LiteLLM_ManagementEndpoint_MetadataFields,
     LiteLLM_ManagementEndpoint_MetadataFields_Premium,
@@ -27,6 +30,20 @@ def _user_has_admin_view(user_api_key_dict: UserAPIKeyAuth) -> bool:
         user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN
         or user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY
     )
+
+
+def _require_proxy_admin(user_api_key_dict: UserAPIKeyAuth) -> None:
+    """
+    Raise 403 unless the caller is a proxy admin.
+
+    Admin-only mutation handlers call this so authorization does not depend
+    solely on route classification in RouteChecks.
+    """
+    if user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"error": CommonProxyErrors.not_allowed_access.value},
+        )
 
 
 def _is_user_team_admin(

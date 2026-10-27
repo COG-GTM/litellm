@@ -349,7 +349,9 @@ class RouteChecks:
             return True
 
         for _llm_passthrough_route in LiteLLMRoutes.mapped_pass_through_routes.value:
-            if _llm_passthrough_route in route:
+            if RouteChecks._route_matches_allowed_route(
+                route=route, allowed_route=_llm_passthrough_route
+            ):
                 return True
         return False
 
