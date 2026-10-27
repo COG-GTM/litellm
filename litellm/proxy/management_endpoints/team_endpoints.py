@@ -1223,7 +1223,7 @@ def validate_team_org_change(
     if (
         team.max_budget
         and organization.litellm_budget_table
-        and organization.litellm_budget_table.max_budget
+        and organization.litellm_budget_table.max_budget is not None
         and team.max_budget > organization.litellm_budget_table.max_budget
     ):
         raise HTTPException(

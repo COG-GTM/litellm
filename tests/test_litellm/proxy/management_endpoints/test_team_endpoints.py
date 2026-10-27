@@ -136,6 +136,35 @@ async def test_validate_team_org_change_same_org_id():
         mock_access_check.assert_not_called()  # Ensure access check wasn't called
 
 
+def test_validate_team_org_change_rejects_budget_above_zero_org_budget():
+    """
+    An organization max_budget of 0 is a real limit: a team with a positive
+    max_budget cannot be moved into it.
+    """
+    team = MagicMock(spec=LiteLLM_TeamTable)
+    team.organization_id = None
+    team.models = []
+    team.max_budget = 10.0
+    team.tpm_limit = None
+    team.rpm_limit = None
+    team.members_with_roles = []
+
+    organization = MagicMock(spec=LiteLLM_OrganizationTableWithMembers)
+    organization.organization_id = "zero-budget-org"
+    organization.models = []
+    organization.litellm_budget_table = MagicMock()
+    organization.litellm_budget_table.max_budget = 0.0
+    organization.members = []
+
+    with pytest.raises(HTTPException) as exc_info:
+        validate_team_org_change(
+            team=team, organization=organization, llm_router=MagicMock(spec=Router)
+        )
+
+    assert exc_info.value.status_code == 403
+    assert "max_budget" in str(exc_info.value.detail)
+
+
 @pytest.mark.asyncio
 async def test_validate_team_org_change_members_in_org():
     """
