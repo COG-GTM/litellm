@@ -560,3 +560,107 @@ async def test_organization_info_includes_user_email(monkeypatch):
 
     membership = LiteLLM_OrganizationMembershipTable(**raw_membership)
     assert membership.user_email == "alice@example.com"
+
+
+def _member_add_prisma_mock(admin_org_ids):
+    mock_prisma_client = MagicMock()
+    mock_prisma_client.db.litellm_organizationtable.find_unique = AsyncMock(
+        return_value=MagicMock(organization_id="org-b")
+    )
+
+    async def mock_find_many(*args, **kwargs):
+        where = kwargs.get("where") or {}
+        requested = where.get("organization_id", {}).get("in", [])
+        return [
+            MagicMock(organization_id=org_id)
+            for org_id in requested
+            if org_id in admin_org_ids
+        ]
+
+    mock_prisma_client.db.litellm_organizationmembership.find_many = mock_find_many
+    return mock_prisma_client
+
+
+@pytest.mark.asyncio
+async def test_organization_member_add_rejects_org_admin_of_other_org(monkeypatch):
+    """
+    organization_member_add must independently verify the caller administers the
+    target organization; an org admin of org-a cannot add members to org-b.
+    """
+    from litellm.proxy._types import (
+        LitellmUserRoles,
+        OrganizationMemberAddRequest,
+        OrgMember,
+        ProxyException,
+        UserAPIKeyAuth,
+    )
+    from litellm.proxy.management_endpoints import organization_endpoints
+
+    monkeypatch.setattr(
+        "litellm.proxy.proxy_server.prisma_client",
+        _member_add_prisma_mock(admin_org_ids={"org-a"}),
+    )
+    mock_add_member = AsyncMock()
+    monkeypatch.setattr(
+        organization_endpoints, "add_member_to_organization", mock_add_member
+    )
+
+    with pytest.raises(ProxyException) as exc_info:
+        await organization_endpoints.organization_member_add(
+            data=OrganizationMemberAddRequest(
+                organization_id="org-b",
+                member=[OrgMember(user_id="u1", role=LitellmUserRoles.INTERNAL_USER)],
+            ),
+            http_request=MagicMock(),
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="org-a-admin", user_role=LitellmUserRoles.INTERNAL_USER
+            ),
+        )
+
+    assert str(exc_info.value.code) == "403"
+    mock_add_member.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "caller",
+    [
+        {"user_id": "org-b-admin", "user_role": "internal_user"},
+        {"user_id": "admin", "user_role": "proxy_admin"},
+    ],
+)
+async def test_organization_member_add_allows_target_org_admin_and_proxy_admin(
+    monkeypatch, caller
+):
+    from litellm.proxy._types import (
+        LitellmUserRoles,
+        OrganizationMemberAddRequest,
+        OrgMember,
+        UserAPIKeyAuth,
+    )
+    from litellm.proxy.management_endpoints import organization_endpoints
+
+    monkeypatch.setattr(
+        "litellm.proxy.proxy_server.prisma_client",
+        _member_add_prisma_mock(admin_org_ids={"org-b"}),
+    )
+    mock_add_member = AsyncMock(return_value=(MagicMock(), MagicMock()))
+    monkeypatch.setattr(
+        organization_endpoints, "add_member_to_organization", mock_add_member
+    )
+    monkeypatch.setattr(
+        organization_endpoints,
+        "OrganizationAddMemberResponse",
+        MagicMock(),
+    )
+
+    await organization_endpoints.organization_member_add(
+        data=OrganizationMemberAddRequest(
+            organization_id="org-b",
+            member=[OrgMember(user_id="u1", role=LitellmUserRoles.INTERNAL_USER)],
+        ),
+        http_request=MagicMock(),
+        user_api_key_dict=UserAPIKeyAuth(**caller),
+    )
+
+    mock_add_member.assert_called_once()

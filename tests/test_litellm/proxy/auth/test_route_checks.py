@@ -1359,6 +1359,86 @@ def test_non_org_admin_with_organizations_list():
     assert _user_is_org_admin({"organizations": ["org-1"]}, user_obj) is False
 
 
+def test_user_is_org_admin_requires_admin_of_every_listed_org():
+    """Org admin of org-1 must not pass when the request also lists an org they don't administer."""
+    user_obj = _make_org_admin_user("org-1")
+    assert _user_is_org_admin({"organizations": ["org-1", "org-2"]}, user_obj) is False
+    assert (
+        _user_is_org_admin(
+            {"organization_id": "org-1", "organizations": ["org-2"]}, user_obj
+        )
+        is False
+    )
+    assert (
+        _user_is_org_admin(
+            {"organization_id": "org-2", "organizations": ["org-1"]}, user_obj
+        )
+        is False
+    )
+
+
+def test_user_is_org_admin_member_but_not_admin_of_second_org():
+    """Being a plain member (not org_admin) of the second listed org is not enough."""
+    user_obj = _make_org_admin_user("org-1")
+    user_obj.organization_memberships.append(
+        LiteLLM_OrganizationMembershipTable(
+            user_id="org-admin-user",
+            organization_id="org-2",
+            user_role=LitellmUserRoles.INTERNAL_USER.value,
+            created_at=datetime(2024, 1, 1),
+            updated_at=datetime(2024, 1, 1),
+        )
+    )
+    assert _user_is_org_admin({"organizations": ["org-1", "org-2"]}, user_obj) is False
+
+
+def test_user_is_org_admin_of_all_listed_orgs():
+    """Org admin of every listed org passes."""
+    user_obj = _make_org_admin_user("org-1")
+    user_obj.organization_memberships.append(
+        LiteLLM_OrganizationMembershipTable(
+            user_id="org-admin-user",
+            organization_id="org-2",
+            user_role=LitellmUserRoles.ORG_ADMIN.value,
+            created_at=datetime(2024, 1, 1),
+            updated_at=datetime(2024, 1, 1),
+        )
+    )
+    assert _user_is_org_admin({"organizations": ["org-1", "org-2"]}, user_obj) is True
+    assert (
+        _user_is_org_admin(
+            {"organization_id": "org-1", "organizations": ["org-2"]}, user_obj
+        )
+        is True
+    )
+
+
+def test_org_admin_cannot_call_user_new_for_other_org():
+    """/user/new listing an org the caller doesn't administer is rejected at the route check."""
+    user_obj = _make_org_admin_user("org-1")
+    valid_token = UserAPIKeyAuth(
+        user_id="org-admin-user", user_role=LitellmUserRoles.INTERNAL_USER
+    )
+    with pytest.raises(Exception):
+        RouteChecks.non_proxy_admin_allowed_routes_check(
+            user_obj=user_obj,
+            _user_role=LitellmUserRoles.INTERNAL_USER.value,
+            route="/user/new",
+            request=MagicMock(),
+            valid_token=valid_token,
+            request_data={"organizations": ["org-1", "org-2"]},
+        )
+
+    RouteChecks.non_proxy_admin_allowed_routes_check(
+        user_obj=user_obj,
+        _user_role=LitellmUserRoles.INTERNAL_USER.value,
+        route="/user/new",
+        request=MagicMock(),
+        valid_token=valid_token,
+        request_data={"organizations": ["org-1"]},
+    )
+
+
 @pytest.mark.asyncio
 async def test_initialize_pass_through_registers_wildcard_for_auth_subpath():
     """

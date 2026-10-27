@@ -20,6 +20,9 @@ from litellm._logging import verbose_proxy_logger
 from litellm._uuid import uuid
 from litellm.proxy._types import *
 from litellm.proxy.auth.auth_checks import can_user_call_model
+from litellm.proxy.auth.auth_checks_organization import (
+    assert_user_can_add_organization_members,
+)
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.management_endpoints.budget_management_endpoints import (
     new_budget,
@@ -851,6 +854,13 @@ async def organization_member_add(
                 detail={
                     "error": f"Organization not found for organization_id={getattr(data, 'organization_id', None)}"
                 },
+            )
+
+        if isinstance(user_api_key_dict, UserAPIKeyAuth):
+            await assert_user_can_add_organization_members(
+                user_api_key_dict=user_api_key_dict,
+                organization_ids=[data.organization_id],
+                prisma_client=prisma_client,
             )
 
         members: List[OrgMember]
