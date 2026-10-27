@@ -1432,3 +1432,79 @@ async def test_initialize_pass_through_registers_wildcard_for_auth_subpath():
             InitPassThroughEndpointHelpers.remove_endpoint_routes(
                 k.split(":")[0]
             )
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/credentials/azure-prod",
+        "/credentials/openai-key",
+        "/access_group/openai-models/update",
+        "/access_group/anthropic-models/delete",
+        "/fallback/azure-gpt-4o",
+        "/model/bedrock-claude/update",
+        "/team/gemini-team",
+        "/azurefoo/bar",
+        "/openai-models",
+    ],
+)
+def test_management_routes_containing_provider_name_are_not_llm_api_routes(route):
+    """
+    Routes that merely contain a mapped pass-through provider name must not be
+    classified as LLM API routes (prevents non-admin access to management routes).
+    """
+    assert RouteChecks.is_llm_api_route(route) is False
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/azure",
+        "/azure/openai/deployments/x/chat/completions",
+        "/azure_ai/models/chat/completions",
+        "/openai/v1/chat/completions",
+        "/openai_passthrough/v1/chat/completions",
+        "/bedrock/model/anthropic.claude-v2/invoke",
+        "/vertex-ai/v1/projects/p/locations/l/publishers/google/models/m:generateContent",
+        "/vertex_ai/discovery/v1/foo",
+        "/anthropic/v1/messages",
+        "/gemini/v1beta/models/gemini-pro:generateContent",
+        "/eu.assemblyai/v2/transcript",
+        "/milvus/v2/vectordb/entities/search",
+    ],
+)
+def test_mapped_pass_through_routes_still_llm_api_routes(route):
+    assert RouteChecks.is_llm_api_route(route) is True
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/credentials/azure-prod",
+        "/access_group/openai-models/update",
+        "/fallback/azure-gpt-4o",
+    ],
+)
+def test_non_admin_rejected_on_management_route_containing_provider_name(route):
+    user_obj = LiteLLM_UserTable(
+        user_id="test_user",
+        user_email="test@example.com",
+        user_role=LitellmUserRoles.INTERNAL_USER.value,
+    )
+    valid_token = UserAPIKeyAuth(
+        user_id="test_user",
+        user_role=LitellmUserRoles.INTERNAL_USER.value,
+    )
+    request = MagicMock(spec=Request)
+    request.query_params = {}
+
+    with pytest.raises(Exception) as exc_info:
+        RouteChecks.non_proxy_admin_allowed_routes_check(
+            user_obj=user_obj,
+            _user_role=LitellmUserRoles.INTERNAL_USER.value,
+            route=route,
+            request=request,
+            valid_token=valid_token,
+            request_data={},
+        )
+    assert "Only proxy admin" in str(exc_info.value)
