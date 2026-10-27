@@ -46,6 +46,7 @@ from litellm.proxy.auth.auth_checks import (
 from litellm.proxy.auth.auth_exception_handler import UserAPIKeyAuthExceptionHandler
 from litellm.proxy.auth.auth_utils import (
     abbreviate_api_key,
+    check_if_request_size_is_safe,
     get_end_user_id_from_request_body,
     get_model_from_request,
     get_request_route,
@@ -1587,6 +1588,9 @@ async def user_api_key_auth(
     """
     Parent function to authenticate user api key / jwt token.
     """
+
+    # Enforce max_request_size_mb before the body is buffered and JSON-parsed.
+    await check_if_request_size_is_safe(request=request)
 
     request_data = await _read_request_body(request=request)
     request_data = populate_request_with_path_params(

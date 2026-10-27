@@ -2,17 +2,24 @@
 Unit tests for auth_utils functions related to rate limiting and customer ID extraction.
 """
 
+import json
 from typing import Optional
 from unittest.mock import MagicMock, patch
 
-from litellm.proxy._types import UserAPIKeyAuth
+import pytest
+from starlette.requests import Request
+
+from litellm.proxy._types import ProxyException, UserAPIKeyAuth
+from litellm.proxy.auth import user_api_key_auth as auth_module
 from litellm.proxy.auth.auth_utils import (
     _get_customer_id_from_standard_headers,
+    check_if_request_size_is_safe,
     get_end_user_id_from_request_body,
     get_model_from_request,
     get_key_model_rpm_limit,
     get_key_model_tpm_limit,
 )
+from litellm.proxy.common_utils.http_parsing_utils import _read_request_body
 
 
 class TestGetKeyModelRpmLimit:
@@ -549,3 +556,149 @@ class TestDeploymentDefaultTpmLimit:
         with patch(_ROUTER_PATCH, mock_router):
             result = get_key_model_tpm_limit(user_api_key_dict, model_name="model1")
         assert result == {"model1": 400}
+
+
+# ---------------------------------------------------------------------------
+# max_request_size_mb must be enforced before the request body is buffered
+# ---------------------------------------------------------------------------
+
+
+_ONE_MB = 1024 * 1024
+
+
+def _make_streaming_request(chunks, headers=None):
+    """Build a Starlette request whose body arrives in `chunks`, tracking reads."""
+    received = {"messages": 0}
+    pending = list(chunks)
+
+    async def receive():
+        received["messages"] += 1
+        if not pending:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        chunk = pending.pop(0)
+        return {"type": "http.request", "body": chunk, "more_body": bool(pending)}
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/chat/completions",
+        "headers": [
+            (k.lower().encode(), v.encode()) for k, v in (headers or {}).items()
+        ],
+        "query_string": b"",
+    }
+    return Request(scope, receive), received
+
+
+def _size_limit_settings(max_request_size_mb, premium_user=True):
+    return (
+        patch(
+            "litellm.proxy.proxy_server.general_settings",
+            {"max_request_size_mb": max_request_size_mb},
+        ),
+        patch("litellm.proxy.proxy_server.premium_user", premium_user),
+    )
+
+
+@pytest.mark.asyncio
+async def test_request_size_rejects_large_content_length_without_reading_body():
+    request, received = _make_streaming_request(
+        [b"x" * _ONE_MB] * 4,
+        headers={
+            "content-type": "application/json",
+            "content-length": str(4 * _ONE_MB),
+        },
+    )
+    settings_patch, premium_patch = _size_limit_settings(1)
+    with settings_patch, premium_patch:
+        with pytest.raises(ProxyException) as exc_info:
+            await check_if_request_size_is_safe(request=request)
+
+    assert exc_info.value.code == "400"
+    assert "Request size is too large" in exc_info.value.message
+    assert received["messages"] == 0
+
+
+@pytest.mark.asyncio
+async def test_request_size_rejects_invalid_content_length():
+    request, received = _make_streaming_request(
+        [b"{}"], headers={"content-length": "not-a-number"}
+    )
+    settings_patch, premium_patch = _size_limit_settings(1)
+    with settings_patch, premium_patch:
+        with pytest.raises(ProxyException) as exc_info:
+            await check_if_request_size_is_safe(request=request)
+
+    assert exc_info.value.code == "400"
+    assert received["messages"] == 0
+
+
+@pytest.mark.asyncio
+async def test_request_size_stops_reading_chunked_body_once_limit_exceeded():
+    """Chunked body (no Content-Length): reading aborts at the limit."""
+    total_chunks = 64
+    request, received = _make_streaming_request(
+        [b"x" * (_ONE_MB // 2)] * total_chunks,
+        headers={"content-type": "application/json"},
+    )
+    settings_patch, premium_patch = _size_limit_settings(1)
+    with settings_patch, premium_patch:
+        assert await check_if_request_size_is_safe(request=request) is True
+        assert received["messages"] == 0
+
+        with pytest.raises(ProxyException) as exc_info:
+            await _read_request_body(request=request)
+
+    assert "Request size is too large" in exc_info.value.message
+    assert received["messages"] == 3
+    assert received["messages"] < total_chunks
+
+
+@pytest.mark.asyncio
+async def test_request_size_allows_body_under_limit():
+    body = json.dumps({"model": "gpt-4o", "messages": []}).encode()
+    request, _ = _make_streaming_request(
+        [body[:10], body[10:]], headers={"content-type": "application/json"}
+    )
+    settings_patch, premium_patch = _size_limit_settings(1)
+    with settings_patch, premium_patch:
+        assert await check_if_request_size_is_safe(request=request) is True
+        parsed = await _read_request_body(request=request)
+        # second call (pre_db_read_auth_checks) is a no-op once checked
+        assert await check_if_request_size_is_safe(request=request) is True
+
+    assert parsed == {"model": "gpt-4o", "messages": []}
+
+
+@pytest.mark.asyncio
+async def test_request_size_not_enforced_for_non_premium():
+    request, _ = _make_streaming_request(
+        [b"x" * (2 * _ONE_MB)],
+        headers={"content-length": str(2 * _ONE_MB)},
+    )
+    settings_patch, premium_patch = _size_limit_settings(1, premium_user=False)
+    with settings_patch, premium_patch:
+        assert await check_if_request_size_is_safe(request=request) is True
+        assert await request.body() == b"x" * (2 * _ONE_MB)
+
+
+@pytest.mark.asyncio
+async def test_user_api_key_auth_checks_size_before_reading_body():
+    request, received = _make_streaming_request(
+        [b"x" * _ONE_MB] * 4,
+        headers={
+            "content-type": "application/json",
+            "content-length": str(4 * _ONE_MB),
+        },
+    )
+    read_body = MagicMock(side_effect=AssertionError("body read before size check"))
+    settings_patch, premium_patch = _size_limit_settings(1)
+    with settings_patch, premium_patch, patch.object(
+        auth_module, "_read_request_body", read_body
+    ):
+        with pytest.raises(ProxyException) as exc_info:
+            await auth_module.user_api_key_auth(request=request, api_key="")
+
+    assert "Request size is too large" in exc_info.value.message
+    read_body.assert_not_called()
+    assert received["messages"] == 0
