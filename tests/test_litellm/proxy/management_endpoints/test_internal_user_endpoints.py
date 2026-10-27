@@ -1822,6 +1822,9 @@ async def test_delete_user_cleans_up_created_by_invitation_links(mocker):
     mock_prisma_client.db.litellm_usertable.find_unique = mocker.AsyncMock(
         side_effect=mock_find_unique
     )
+    mock_prisma_client.db.litellm_usertable.find_many = mocker.AsyncMock(
+        return_value=[mock_user_row]
+    )
 
     # Mock find_many for teams (no teams)
     mock_prisma_client.db.litellm_teamtable.find_many = mocker.AsyncMock(

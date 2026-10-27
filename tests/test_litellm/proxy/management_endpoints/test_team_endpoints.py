@@ -3440,6 +3440,10 @@ async def test_new_team_org_scoped_models_not_in_org_models():
 
 
 @pytest.mark.asyncio
+@patch(
+    "litellm.proxy.management_endpoints.team_endpoints._assert_user_can_update_team",
+    new=AsyncMock(),
+)
 async def test_update_team_standalone_budget_exceeds_user_limit():
     """
     Test that /team/update for a standalone team fails when new budget exceeds user's max_budget.
@@ -3516,6 +3520,10 @@ async def test_update_team_standalone_budget_exceeds_user_limit():
 
 
 @pytest.mark.asyncio
+@patch(
+    "litellm.proxy.management_endpoints.team_endpoints._assert_user_can_update_team",
+    new=AsyncMock(),
+)
 async def test_update_team_org_scoped_budget_exceeds_org_limit():
     """
     Test that /team/update for an org-scoped team fails when new budget exceeds organization's max_budget.
@@ -3598,6 +3606,10 @@ async def test_update_team_org_scoped_budget_exceeds_org_limit():
 
 
 @pytest.mark.asyncio
+@patch(
+    "litellm.proxy.management_endpoints.team_endpoints._assert_user_can_update_team",
+    new=AsyncMock(),
+)
 async def test_update_team_standalone_models_exceeds_user_limit():
     """
     Test that /team/update for a standalone team fails when models are not in user's allowed models.
@@ -3662,6 +3674,10 @@ async def test_update_team_standalone_models_exceeds_user_limit():
 
 
 @pytest.mark.asyncio
+@patch(
+    "litellm.proxy.management_endpoints.team_endpoints._assert_user_can_update_team",
+    new=AsyncMock(),
+)
 async def test_update_team_org_scoped_budget_bypasses_user_limit():
     """
     Test that /team/update for an org-scoped team does NOT validate budget against user's personal max_budget.
@@ -3767,6 +3783,10 @@ async def test_update_team_org_scoped_budget_bypasses_user_limit():
 
 
 @pytest.mark.asyncio
+@patch(
+    "litellm.proxy.management_endpoints.team_endpoints._assert_user_can_update_team",
+    new=AsyncMock(),
+)
 async def test_update_team_org_scoped_models_bypasses_user_limit():
     """
     Test that /team/update for an org-scoped team does NOT validate models against user's personal models.
@@ -3860,6 +3880,10 @@ async def test_update_team_org_scoped_models_bypasses_user_limit():
 
 
 @pytest.mark.asyncio
+@patch(
+    "litellm.proxy.management_endpoints.team_endpoints._assert_user_can_update_team",
+    new=AsyncMock(),
+)
 async def test_update_team_org_scoped_models_not_in_org_models():
     """
     Test that /team/update for an org-scoped team fails when models are not in organization's allowed models.
@@ -3938,6 +3962,10 @@ async def test_update_team_org_scoped_models_not_in_org_models():
 
 
 @pytest.mark.asyncio
+@patch(
+    "litellm.proxy.management_endpoints.team_endpoints._assert_user_can_update_team",
+    new=AsyncMock(),
+)
 async def test_update_team_org_scoped_models_with_all_proxy_models():
     """
     Test that /team/update for an org-scoped team succeeds when organization has 'all-proxy-models'.
@@ -4032,6 +4060,10 @@ async def test_update_team_org_scoped_models_with_all_proxy_models():
 
 
 @pytest.mark.asyncio
+@patch(
+    "litellm.proxy.management_endpoints.team_endpoints._assert_user_can_update_team",
+    new=AsyncMock(),
+)
 async def test_update_team_tpm_limit_exceeds_user_limit():
     """
     Test that /team/update fails when TPM limit exceeds user's TPM limit.
@@ -4094,6 +4126,10 @@ async def test_update_team_tpm_limit_exceeds_user_limit():
 
 
 @pytest.mark.asyncio
+@patch(
+    "litellm.proxy.management_endpoints.team_endpoints._assert_user_can_update_team",
+    new=AsyncMock(),
+)
 async def test_update_team_rpm_limit_exceeds_user_limit():
     """
     Test that /team/update fails when RPM limit exceeds user's RPM limit.
@@ -4410,6 +4446,10 @@ async def test_new_team_org_scoped_tpm_rpm_bypasses_user_limit():
 
 
 @pytest.mark.asyncio
+@patch(
+    "litellm.proxy.management_endpoints.team_endpoints._assert_user_can_update_team",
+    new=AsyncMock(),
+)
 async def test_update_team_org_scoped_tpm_exceeds_org_limit():
     """
     Test that /team/update for an org-scoped team fails when TPM exceeds organization's TPM limit.
@@ -4492,6 +4532,10 @@ async def test_update_team_org_scoped_tpm_exceeds_org_limit():
 
 
 @pytest.mark.asyncio
+@patch(
+    "litellm.proxy.management_endpoints.team_endpoints._assert_user_can_update_team",
+    new=AsyncMock(),
+)
 async def test_update_team_org_scoped_rpm_exceeds_org_limit():
     """
     Test that /team/update for an org-scoped team fails when RPM exceeds organization's RPM limit.
@@ -4574,6 +4618,10 @@ async def test_update_team_org_scoped_rpm_exceeds_org_limit():
 
 
 @pytest.mark.asyncio
+@patch(
+    "litellm.proxy.management_endpoints.team_endpoints._assert_user_can_update_team",
+    new=AsyncMock(),
+)
 async def test_update_team_org_scoped_tpm_rpm_bypasses_user_limit():
     """
     Test that /team/update for an org-scoped team bypasses user's TPM/RPM limits.
@@ -4676,6 +4724,10 @@ async def test_update_team_org_scoped_tpm_rpm_bypasses_user_limit():
 
 
 @pytest.mark.asyncio
+@patch(
+    "litellm.proxy.management_endpoints.team_endpoints._assert_user_can_update_team",
+    new=AsyncMock(),
+)
 async def test_update_team_guardrails_with_org_id():
     """
     Test that updating team guardrails works when team has an organization_id.

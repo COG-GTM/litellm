@@ -70,6 +70,8 @@ from litellm.proxy.auth.auth_checks import (
 )
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.management_endpoints.common_utils import (
+    _assert_user_can_manage_teams,
+    _get_caller_org_admin_org_ids,
     _is_user_org_admin_for_team,
     _is_user_team_admin,
     _set_object_metadata_field,
@@ -1279,6 +1281,57 @@ def validate_team_org_change(
     return True
 
 
+async def _assert_user_can_update_team(
+    user_api_key_dict: UserAPIKeyAuth,
+    existing_team: LiteLLM_TeamTable,
+    new_organization_id: Optional[str],
+) -> None:
+    """
+    /team/update is allowed for proxy admins, team admins, and org admins of
+    the team's current organization. Moving a team into or out of an
+    organization additionally requires org admin of every affected org.
+    """
+    if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:
+        return
+
+    admin_org_ids = set(await _get_caller_org_admin_org_ids(user_api_key_dict))
+    is_org_admin_for_team = (
+        existing_team.organization_id is not None
+        and existing_team.organization_id in admin_org_ids
+    )
+    if not is_org_admin_for_team and not _is_user_team_admin(
+        user_api_key_dict=user_api_key_dict, team_obj=existing_team
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "Call not allowed. User must be a proxy admin, team admin, or org admin of the team's organization. route=/team/update, team_id={}".format(
+                    existing_team.team_id
+                )
+            },
+        )
+
+    if new_organization_id is None:
+        return
+    target_org_id = new_organization_id or None
+    if target_org_id == existing_team.organization_id:
+        return
+    affected_org_ids = {
+        org_id
+        for org_id in (existing_team.organization_id, target_org_id)
+        if org_id is not None
+    }
+    if not affected_org_ids.issubset(admin_org_ids):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "Call not allowed. Changing a team's organization requires org admin of both the current and the new organization. route=/team/update, team_id={}".format(
+                    existing_team.team_id
+                )
+            },
+        )
+
+
 @router.post(
     "/team/update", tags=["team management"], dependencies=[Depends(user_api_key_auth)]
 )
@@ -1408,6 +1461,12 @@ async def update_team(  # noqa: PLR0915
                 status_code=404,
                 detail={"error": f"Team not found, passed team_id={data.team_id}"},
             )
+
+        await _assert_user_can_update_team(
+            user_api_key_dict=user_api_key_dict,
+            existing_team=LiteLLM_TeamTable(**existing_team_row.model_dump()),
+            new_organization_id=data.organization_id,
+        )
 
         if data.soft_budget is not None:
             max_budget_to_check = (
@@ -2704,6 +2763,12 @@ async def delete_team(
         team_row_pydantic = LiteLLM_TeamTable(**team_row_base.model_dump())
         team_rows.append(team_row_pydantic)
 
+    await _assert_user_can_manage_teams(
+        user_api_key_dict=user_api_key_dict,
+        teams=team_rows,
+        route="/team/delete",
+    )
+
     await _persist_deleted_team_records(
         teams=team_rows,
         prisma_client=prisma_client,
@@ -3097,6 +3162,27 @@ async def team_info(
         )
 
 
+async def _get_team_and_assert_can_manage(
+    team_id: str,
+    prisma_client: PrismaClient,
+    user_api_key_dict: UserAPIKeyAuth,
+    route: str,
+) -> LiteLLM_TeamTable:
+    team_row = await prisma_client.db.litellm_teamtable.find_unique(
+        where={"team_id": team_id}
+    )
+    if team_row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": f"Team not found, passed team_id={team_id}"},
+        )
+    team_obj = LiteLLM_TeamTable(**team_row.model_dump())
+    await _assert_user_can_manage_teams(
+        user_api_key_dict=user_api_key_dict, teams=[team_obj], route=route
+    )
+    return team_obj
+
+
 @router.post(
     "/team/block", tags=["team management"], dependencies=[Depends(user_api_key_auth)]
 )
@@ -3132,6 +3218,13 @@ async def block_team(
 
     if prisma_client is None:
         raise Exception("No DB Connected.")
+
+    await _get_team_and_assert_can_manage(
+        team_id=data.team_id,
+        prisma_client=prisma_client,
+        user_api_key_dict=user_api_key_dict,
+        route="/team/block",
+    )
 
     record = await prisma_client.db.litellm_teamtable.update(
         where={"team_id": data.team_id}, data={"blocked": True}  # type: ignore
@@ -3175,6 +3268,13 @@ async def unblock_team(
 
     if prisma_client is None:
         raise Exception("No DB Connected.")
+
+    await _get_team_and_assert_can_manage(
+        team_id=data.team_id,
+        prisma_client=prisma_client,
+        user_api_key_dict=user_api_key_dict,
+        route="/team/unblock",
+    )
 
     record = await prisma_client.db.litellm_teamtable.update(
         where={"team_id": data.team_id}, data={"blocked": False}  # type: ignore
