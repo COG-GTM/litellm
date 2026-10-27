@@ -348,10 +348,24 @@ class RouteChecks:
         if RouteChecks._is_azure_openai_route(route=route):
             return True
 
-        for _llm_passthrough_route in LiteLLMRoutes.mapped_pass_through_routes.value:
-            if _llm_passthrough_route in route:
-                return True
-        return False
+        return RouteChecks._is_mapped_pass_through_route(route=route)
+
+    @staticmethod
+    def _is_mapped_pass_through_route(route: str) -> bool:
+        """
+        Check if route is under one of the mapped provider pass-through prefixes.
+
+        Uses an anchored prefix match so management routes that merely contain a
+        provider name (e.g. "/credentials/azure-prod") are not treated as LLM routes.
+        """
+        if not isinstance(route, str):
+            return False
+        return any(
+            RouteChecks._route_matches_allowed_route(
+                route=route, allowed_route=_llm_passthrough_route
+            )
+            for _llm_passthrough_route in LiteLLMRoutes.mapped_pass_through_routes.value
+        )
 
     @staticmethod
     def is_management_route(route: str) -> bool:
