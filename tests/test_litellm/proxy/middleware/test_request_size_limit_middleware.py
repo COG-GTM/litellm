@@ -85,7 +85,7 @@ def test_aborts_chunked_body_once_limit_exceeded(limit_1mb):
     response = client.post("/upload", content=body_chunks())
 
     assert response.status_code == 400
-    assert "Request size is too large" in response.json()["error"]
+    assert "Request size is too large" in response.json()["error"]["message"]
     assert handler_calls == [True]
 
 
@@ -131,12 +131,13 @@ def test_fastapi_body_params_are_not_parsed_when_too_large(limit_1mb):
     client = TestClient(app)
     oversized = b'{"a": "' + b"x" * (2 * _ONE_MB) + b'"}'
 
-    assert client.post("/key/generate", content=oversized).status_code == 400
-
     def chunked():
         yield oversized
 
-    assert client.post("/key/generate", content=chunked()).status_code == 400
+    for content in (oversized, chunked()):
+        response = client.post("/key/generate", content=content)
+        assert response.status_code == 400
+        assert "Request size is too large" in response.json()["error"]["message"]
     assert dependency_calls == []
 
     ok = client.post("/key/generate", json={"a": 1})
