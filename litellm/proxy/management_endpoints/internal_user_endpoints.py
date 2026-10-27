@@ -26,6 +26,9 @@ from litellm._logging import verbose_proxy_logger
 from litellm._uuid import uuid
 from litellm.proxy._types import *
 from litellm.proxy.auth.auth_checks import get_team_object, get_user_object
+from litellm.proxy.auth.auth_checks_organization import (
+    assert_user_can_add_organization_members,
+)
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.hooks.user_management_event_hooks import UserManagementEventHooks
 from litellm.proxy.management_endpoints.common_daily_activity import (
@@ -461,6 +464,12 @@ async def new_user(
         organization_ids = cast(
             Optional[List[str]], data_json.pop("organizations", None)
         )
+        if organization_ids and isinstance(user_api_key_dict, UserAPIKeyAuth):
+            await assert_user_can_add_organization_members(
+                user_api_key_dict=user_api_key_dict,
+                organization_ids=organization_ids,
+                prisma_client=prisma_client,
+            )
 
         response = await generate_key_helper_fn(request_type="user", **data_json)
         # Admin UI Logic

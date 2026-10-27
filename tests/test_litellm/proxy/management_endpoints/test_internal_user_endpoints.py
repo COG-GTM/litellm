@@ -2516,3 +2516,135 @@ class TestGetUserIdFromRequestValidation:
         request = self._make_request(f"user_id={exact_id}")
         result = get_user_id_from_request(request)
         assert result == exact_id
+
+
+def _mock_org_admin_memberships(mocker, admin_org_ids):
+    """find_many stub that returns ORG_ADMIN memberships for `admin_org_ids` only."""
+
+    async def mock_find_many(*args, **kwargs):
+        where = kwargs.get("where") or {}
+        requested = where.get("organization_id", {}).get("in", [])
+        return [
+            mocker.MagicMock(organization_id=org_id)
+            for org_id in requested
+            if org_id in admin_org_ids
+        ]
+
+    return mock_find_many
+
+
+def _setup_new_user_mocks(mocker, admin_org_ids):
+    mock_prisma_client = mocker.MagicMock()
+
+    async def mock_count(*args, **kwargs):
+        return 5
+
+    mock_prisma_client.db.litellm_usertable.count = mock_count
+    mock_prisma_client.db.litellm_organizationmembership.find_many = (
+        _mock_org_admin_memberships(mocker, admin_org_ids)
+    )
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints._check_duplicate_user_email",
+        _noop,
+    )
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints._check_duplicate_user_id",
+        _noop,
+    )
+    mock_license_check = mocker.MagicMock()
+    mock_license_check.is_over_limit.return_value = False
+    mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+    mocker.patch("litellm.proxy.proxy_server._license_check", mock_license_check)
+
+    mock_generate_key_helper_fn = mocker.AsyncMock(
+        return_value={
+            "user_id": "new-user-123",
+            "token": "sk-test-token-123",
+            "expires": None,
+            "max_budget": None,
+        }
+    )
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints.generate_key_helper_fn",
+        mock_generate_key_helper_fn,
+    )
+    mock_add_user_to_organizations = mocker.AsyncMock()
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints._add_user_to_organizations",
+        mock_add_user_to_organizations,
+    )
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints.UserManagementEventHooks.async_user_created_hook",
+        mocker.AsyncMock(),
+    )
+    return mock_generate_key_helper_fn, mock_add_user_to_organizations
+
+
+@pytest.mark.asyncio
+async def test_new_user_org_admin_cannot_add_user_to_other_org(mocker):
+    """
+    Org admin of org-a must not be able to create a user in org-b by listing
+    both orgs in `organizations`. No user is created.
+    """
+    mock_generate_key_helper_fn, mock_add_user_to_organizations = _setup_new_user_mocks(
+        mocker, admin_org_ids={"org-a"}
+    )
+
+    with pytest.raises(ProxyException) as exc_info:
+        await new_user(
+            data=NewUserRequest(
+                user_email="mallory2@example.com", organizations=["org-a", "org-b"]
+            ),
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="org-a-admin", user_role=LitellmUserRoles.INTERNAL_USER
+            ),
+        )
+
+    assert str(exc_info.value.code) == "403"
+    assert "org-b" in str(exc_info.value.message)
+    assert "org-a'" not in str(exc_info.value.message)
+    mock_generate_key_helper_fn.assert_not_called()
+    mock_add_user_to_organizations.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_new_user_org_admin_can_add_user_to_own_org(mocker):
+    """Org admin of org-a can still create a user in org-a."""
+    mock_generate_key_helper_fn, mock_add_user_to_organizations = _setup_new_user_mocks(
+        mocker, admin_org_ids={"org-a"}
+    )
+
+    await new_user(
+        data=NewUserRequest(user_email="new@example.com", organizations=["org-a"]),
+        user_api_key_dict=UserAPIKeyAuth(
+            user_id="org-a-admin", user_role=LitellmUserRoles.INTERNAL_USER
+        ),
+    )
+
+    mock_generate_key_helper_fn.assert_called_once()
+    mock_add_user_to_organizations.assert_called_once()
+    assert mock_add_user_to_organizations.call_args.kwargs["organizations"] == ["org-a"]
+
+
+@pytest.mark.asyncio
+async def test_new_user_proxy_admin_can_add_user_to_any_org(mocker):
+    """Proxy admins are not restricted by org membership."""
+    mock_generate_key_helper_fn, mock_add_user_to_organizations = _setup_new_user_mocks(
+        mocker, admin_org_ids=set()
+    )
+
+    await new_user(
+        data=NewUserRequest(
+            user_email="new@example.com", organizations=["org-a", "org-b"]
+        ),
+        user_api_key_dict=UserAPIKeyAuth(
+            user_id="admin", user_role=LitellmUserRoles.PROXY_ADMIN
+        ),
+    )
+
+    mock_generate_key_helper_fn.assert_called_once()
+    mock_add_user_to_organizations.assert_called_once()

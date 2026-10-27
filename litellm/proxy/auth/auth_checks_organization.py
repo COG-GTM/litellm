@@ -2,7 +2,7 @@
 Auth Checks for Organizations
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import status
 
@@ -144,7 +144,7 @@ def _user_is_org_admin(
     user_object: Optional[LiteLLM_UserTable] = None,
 ) -> bool:
     """
-    Helper function to check if user is an org admin for any of the passed organizations.
+    Helper function to check if user is an org admin for ALL of the passed organizations.
 
     Checks both:
     - `organization_id` (singular string) — legacy callers
@@ -168,9 +168,47 @@ def _user_is_org_admin(
     if not candidate_org_ids:
         return False
 
-    for _membership in user_object.organization_memberships:
-        if _membership.organization_id in candidate_org_ids:
-            if _membership.user_role == LitellmUserRoles.ORG_ADMIN.value:
-                return True
+    admin_org_ids = {
+        _membership.organization_id
+        for _membership in user_object.organization_memberships
+        if _membership.user_role == LitellmUserRoles.ORG_ADMIN.value
+    }
 
-    return False
+    return all(org_id in admin_org_ids for org_id in candidate_org_ids)
+
+
+async def assert_user_can_add_organization_members(
+    user_api_key_dict: UserAPIKeyAuth,
+    organization_ids: List[str],
+    prisma_client: Any,
+) -> None:
+    """
+    Raise a 403 unless the caller is a proxy admin, or an org admin of every
+    organization in `organization_ids`.
+    """
+    if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:
+        return
+
+    unique_org_ids = list(dict.fromkeys(organization_ids))
+    if not unique_org_ids:
+        return
+
+    admin_org_ids: set = set()
+    if user_api_key_dict.user_id is not None:
+        memberships = await prisma_client.db.litellm_organizationmembership.find_many(
+            where={
+                "user_id": user_api_key_dict.user_id,
+                "organization_id": {"in": unique_org_ids},
+                "user_role": LitellmUserRoles.ORG_ADMIN.value,
+            }
+        )
+        admin_org_ids = {m.organization_id for m in memberships}
+
+    unauthorized_org_ids = [o for o in unique_org_ids if o not in admin_org_ids]
+    if unauthorized_org_ids:
+        raise ProxyException(
+            message=f"Only proxy admins or org admins of the organization can add members. You are not an org admin of organization(s): {unauthorized_org_ids}",
+            type=ProxyErrorTypes.auth_error.value,
+            param="organization_id",
+            code=status.HTTP_403_FORBIDDEN,
+        )
