@@ -5,6 +5,7 @@ from functools import lru_cache
 from typing import Any, List, Optional, Tuple
 
 from fastapi import HTTPException, Request, status
+from starlette.types import Message, Receive
 
 from litellm import Router, provider_list
 from litellm._logging import verbose_proxy_logger
@@ -427,10 +428,107 @@ def normalize_request_route(route: str) -> str:
     return route
 
 
+REQUEST_SIZE_CHECKED_SCOPE_KEY = "litellm_request_size_checked"
+
+
+def get_max_request_size_mb() -> Optional[float]:
+    from litellm.proxy.proxy_server import general_settings, premium_user
+
+    max_request_size_mb = general_settings.get("max_request_size_mb", None)
+    if max_request_size_mb is None:
+        return None
+
+    if premium_user is not True:
+        verbose_proxy_logger.warning(
+            f"using max_request_size_mb - not checking -  this is an enterprise only feature. {CommonProxyErrors.not_premium_user.value}"
+        )
+        return None
+
+    return max_request_size_mb
+
+
+def _request_too_large_exception(
+    request_size_mb: float, max_request_size_mb: float
+) -> ProxyException:
+    return ProxyException(
+        message=f"Request size is too large. Request size is {request_size_mb} MB. Max size is {max_request_size_mb} MB",
+        type=ProxyErrorTypes.bad_request_error.value,
+        code=400,
+        param="content-length",
+    )
+
+
+def check_content_length_is_safe(
+    content_length: Optional[str], max_request_size_mb: float
+) -> None:
+    """Reject based on the Content-Length header alone, without reading the body."""
+    if not content_length:
+        return
+    try:
+        header_size = int(content_length)
+    except ValueError:
+        raise ProxyException(
+            message="Invalid Content-Length header",
+            type=ProxyErrorTypes.bad_request_error.value,
+            code=400,
+            param="content-length",
+        )
+    header_size_mb = bytes_to_mb(bytes_value=header_size)
+    verbose_proxy_logger.debug(f"content_length request size in MB={header_size_mb}")
+    if header_size_mb > max_request_size_mb:
+        raise _request_too_large_exception(header_size_mb, max_request_size_mb)
+
+
+def wrap_receive_with_size_limit(
+    receive: Receive, max_request_size_mb: float
+) -> Receive:
+    """
+    Wrap an ASGI receive channel so that any body read (`request.body()`,
+    `request.form()`, `request.stream()`) aborts as soon as the running total
+    exceeds the limit, instead of buffering the full payload. Covers requests
+    without a (truthful) Content-Length, e.g. chunked uploads.
+    """
+    max_request_size_bytes = max_request_size_mb * 1024 * 1024
+    received_bytes = 0
+
+    async def _size_limited_receive() -> Message:
+        nonlocal received_bytes
+        message = await receive()
+        if message.get("type") == "http.request":
+            received_bytes += len(message.get("body", b""))
+            if received_bytes > max_request_size_bytes:
+                raise _request_too_large_exception(
+                    bytes_to_mb(bytes_value=received_bytes), max_request_size_mb
+                )
+        return message
+
+    return _size_limited_receive
+
+
+def _limit_request_body_stream(request: Request, max_request_size_mb: float) -> None:
+    cached_body = getattr(request, "_body", None)
+    if isinstance(cached_body, bytes):
+        request_size_mb = bytes_to_mb(bytes_value=len(cached_body))
+        if request_size_mb > max_request_size_mb:
+            raise _request_too_large_exception(request_size_mb, max_request_size_mb)
+        return
+
+    original_receive = getattr(request, "_receive", None)
+    if original_receive is None:
+        return
+
+    request._receive = wrap_receive_with_size_limit(  # type: ignore[attr-defined]
+        original_receive, max_request_size_mb
+    )
+
+
 async def check_if_request_size_is_safe(request: Request) -> bool:
     """
     Enterprise Only:
         - Checks if the request size is within the limit
+
+    Must run before the request body is read (see `user_api_key_auth`), so that
+    oversized requests are rejected without buffering or parsing the payload.
 
     Args:
         request (Request): The incoming request.
@@ -442,52 +540,21 @@ async def check_if_request_size_is_safe(request: Request) -> bool:
         ProxyException: If the request size is too large
 
     """
-    from litellm.proxy.proxy_server import general_settings, premium_user
+    if request.scope.get(REQUEST_SIZE_CHECKED_SCOPE_KEY) is True:
+        return True
 
-    max_request_size_mb = general_settings.get("max_request_size_mb", None)
+    max_request_size_mb = get_max_request_size_mb()
 
     if max_request_size_mb is not None:
-        # Check if premium user
-        if premium_user is not True:
-            verbose_proxy_logger.warning(
-                f"using max_request_size_mb - not checking -  this is an enterprise only feature. {CommonProxyErrors.not_premium_user.value}"
-            )
-            return True
+        check_content_length_is_safe(
+            content_length=request.headers.get("content-length"),
+            max_request_size_mb=max_request_size_mb,
+        )
+        _limit_request_body_stream(
+            request=request, max_request_size_mb=max_request_size_mb
+        )
 
-        # Get the request body
-        content_length = request.headers.get("content-length")
-
-        if content_length:
-            header_size = int(content_length)
-            header_size_mb = bytes_to_mb(bytes_value=header_size)
-            verbose_proxy_logger.debug(
-                f"content_length request size in MB={header_size_mb}"
-            )
-
-            if header_size_mb > max_request_size_mb:
-                raise ProxyException(
-                    message=f"Request size is too large. Request size is {header_size_mb} MB. Max size is {max_request_size_mb} MB",
-                    type=ProxyErrorTypes.bad_request_error.value,
-                    code=400,
-                    param="content-length",
-                )
-        else:
-            # If Content-Length is not available, read the body
-            body = await request.body()
-            body_size = len(body)
-            request_size_mb = bytes_to_mb(bytes_value=body_size)
-
-            verbose_proxy_logger.debug(
-                f"request body request size in MB={request_size_mb}"
-            )
-            if request_size_mb > max_request_size_mb:
-                raise ProxyException(
-                    message=f"Request size is too large. Request size is {request_size_mb} MB. Max size is {max_request_size_mb} MB",
-                    type=ProxyErrorTypes.bad_request_error.value,
-                    code=400,
-                    param="content-length",
-                )
-
+    request.scope[REQUEST_SIZE_CHECKED_SCOPE_KEY] = True
     return True
 
 
