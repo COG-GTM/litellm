@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import sys
+from datetime import datetime
 from typing import Optional, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -189,6 +190,8 @@ async def test_fetch_and_validate_organization_uses_proposed_max_budget(
         "models": [],
         "created_by": "test",
         "updated_by": "test",
+        "created_at": datetime.now(),
+        "updated_at": datetime.now(),
         "litellm_budget_table": {"max_budget": 0.0},
         "members": [],
     }
