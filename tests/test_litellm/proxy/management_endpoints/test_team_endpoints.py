@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import sys
+from datetime import datetime
 from typing import Optional, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -38,6 +39,7 @@ from litellm.proxy.management_endpoints.team_endpoints import (
     _transform_teams_to_deleted_records,
     _validate_and_populate_member_user_info,
     delete_team,
+    fetch_and_validate_organization,
     list_available_teams,
     router,
     team_member_add_duplication_check,
@@ -134,6 +136,83 @@ async def test_validate_team_org_change_same_org_id():
         # Assert the function returns True without checking anything
         assert result is True
         mock_access_check.assert_not_called()  # Ensure access check wasn't called
+
+
+def test_validate_team_org_change_rejects_budget_above_zero_org_budget():
+    """
+    An organization max_budget of 0 is a real limit: a team with a positive
+    max_budget cannot be moved into it.
+    """
+    team = MagicMock(spec=LiteLLM_TeamTable)
+    team.organization_id = None
+    team.models = []
+    team.max_budget = 10.0
+    team.tpm_limit = None
+    team.rpm_limit = None
+    team.members_with_roles = []
+
+    organization = MagicMock(spec=LiteLLM_OrganizationTableWithMembers)
+    organization.organization_id = "zero-budget-org"
+    organization.models = []
+    organization.litellm_budget_table = MagicMock()
+    organization.litellm_budget_table.max_budget = 0.0
+    organization.members = []
+
+    with pytest.raises(HTTPException) as exc_info:
+        validate_team_org_change(
+            team=team, organization=organization, llm_router=MagicMock(spec=Router)
+        )
+
+    assert exc_info.value.status_code == 403
+    assert "max_budget" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "proposed_max_budget,expected_team_max_budget",
+    [(0.0, 0.0), (None, 10.0)],
+)
+async def test_fetch_and_validate_organization_uses_proposed_max_budget(
+    proposed_max_budget, expected_team_max_budget
+):
+    """
+    When a team update changes organization_id and max_budget together, the org
+    validation must use the requested max_budget (falling back to the existing one).
+    """
+    existing_team_row = LiteLLM_TeamTable(
+        team_id="team-1", organization_id=None, max_budget=10.0
+    )
+    organization_row = MagicMock()
+    organization_row.model_dump.return_value = {
+        "organization_id": "zero-budget-org",
+        "budget_id": "budget-zero",
+        "spend": 0.0,
+        "models": [],
+        "created_by": "test",
+        "updated_by": "test",
+        "created_at": datetime.now(),
+        "updated_at": datetime.now(),
+        "litellm_budget_table": {"max_budget": 0.0},
+        "members": [],
+    }
+    prisma_client = MagicMock()
+    prisma_client.db.litellm_organizationtable.find_unique = AsyncMock(
+        return_value=organization_row
+    )
+
+    with patch(
+        "litellm.proxy.management_endpoints.team_endpoints.validate_team_org_change"
+    ) as mock_validate:
+        await fetch_and_validate_organization(
+            organization_id="zero-budget-org",
+            existing_team_row=existing_team_row,
+            llm_router=MagicMock(spec=Router),
+            prisma_client=prisma_client,
+            proposed_max_budget=proposed_max_budget,
+        )
+
+    validated_team = mock_validate.call_args.kwargs["team"]
+    assert validated_team.max_budget == expected_team_max_budget
 
 
 @pytest.mark.asyncio

@@ -3377,8 +3377,8 @@ async def _organization_max_budget_check(
     if org_table.litellm_budget_table is not None:
         org_max_budget = org_table.litellm_budget_table.max_budget
 
-    # Only check if organization has a valid max_budget set
-    if org_max_budget is None or org_max_budget <= 0:
+    # No budget configured -> unlimited. A max_budget of 0 means no spend is allowed.
+    if org_max_budget is None:
         return
 
     # Check if organization spend exceeds max budget

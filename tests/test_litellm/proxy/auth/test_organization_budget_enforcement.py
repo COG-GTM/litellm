@@ -342,3 +342,100 @@ async def test_both_team_and_org_budget_enforced():
                 assert "Organization" in str(exc_info.value.message)
                 assert exc_info.value.current_cost == 150.0
                 assert exc_info.value.max_budget == 100.0
+
+
+def _org_with_budget(org_id: str, max_budget: Optional[float], spend: float):
+    return LiteLLM_OrganizationTable(
+        organization_id=org_id,
+        budget_id="budget-zero",
+        spend=spend,
+        models=["gpt-4"],
+        created_by="test",
+        updated_by="test",
+        litellm_budget_table=LiteLLM_BudgetTable(max_budget=max_budget),
+    )
+
+
+async def _run_org_common_checks(org_object, valid_token, team_object=None):
+    mock_request = MagicMock()
+    mock_request.url.path = "/v1/chat/completions"
+    mock_proxy_logging = MagicMock(spec=ProxyLogging)
+    mock_proxy_logging.budget_alerts = AsyncMock()
+
+    with patch("litellm.proxy.proxy_server.prisma_client"):
+        with patch("litellm.proxy.proxy_server.user_api_key_cache"):
+            with patch(
+                "litellm.proxy.auth.auth_checks.get_org_object",
+                new_callable=AsyncMock,
+            ) as mock_get_org:
+                mock_get_org.return_value = org_object
+                return await common_checks(
+                    request_body={"model": "gpt-4"},
+                    team_object=team_object,
+                    user_object=None,
+                    end_user_object=None,
+                    global_proxy_spend=None,
+                    general_settings={},
+                    route="/v1/chat/completions",
+                    llm_router=None,
+                    proxy_logging_obj=mock_proxy_logging,
+                    valid_token=valid_token,
+                    request=mock_request,
+                )
+
+
+@pytest.mark.asyncio
+async def test_organization_zero_budget_blocks_request_via_key_org_id():
+    """
+    An organization max_budget of 0 means "no spend allowed", not "unlimited".
+    """
+    org_id = "org-zero-budget"
+    org_object = _org_with_budget(org_id=org_id, max_budget=0.0, spend=0.0)
+    valid_token = UserAPIKeyAuth(token="sk-zero", org_id=org_id)
+
+    with pytest.raises(litellm.BudgetExceededError) as exc_info:
+        await _run_org_common_checks(org_object=org_object, valid_token=valid_token)
+
+    assert "Organization" in str(exc_info.value.message)
+    assert exc_info.value.max_budget == 0.0
+    assert exc_info.value.current_cost == 0.0
+
+
+@pytest.mark.asyncio
+async def test_organization_zero_budget_blocks_request_via_team_org():
+    """
+    The zero budget is enforced when the org is resolved through the key's team.
+    """
+    org_id = "org-zero-budget-team"
+    org_object = _org_with_budget(org_id=org_id, max_budget=0.0, spend=0.0)
+    team_object = LiteLLM_TeamTable(
+        team_id="team-in-zero-org",
+        organization_id=org_id,
+        max_budget=None,
+        spend=0.0,
+        models=["gpt-4"],
+    )
+    valid_token = UserAPIKeyAuth(token="sk-zero-team", team_id="team-in-zero-org")
+
+    with pytest.raises(litellm.BudgetExceededError) as exc_info:
+        await _run_org_common_checks(
+            org_object=org_object, valid_token=valid_token, team_object=team_object
+        )
+
+    assert "Organization" in str(exc_info.value.message)
+    assert exc_info.value.max_budget == 0.0
+
+
+@pytest.mark.asyncio
+async def test_organization_without_max_budget_is_unlimited():
+    """
+    An organization with no max_budget (None) is still treated as unlimited.
+    """
+    org_id = "org-no-budget"
+    org_object = _org_with_budget(org_id=org_id, max_budget=None, spend=1000.0)
+    valid_token = UserAPIKeyAuth(token="sk-unlimited", org_id=org_id)
+
+    result = await _run_org_common_checks(
+        org_object=org_object, valid_token=valid_token
+    )
+    assert result is True
