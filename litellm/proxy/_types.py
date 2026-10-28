@@ -1,6 +1,7 @@
 import enum
 import json
 import os
+import re
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, Optional, Union
 
@@ -217,6 +218,14 @@ def hash_token(token: str):
     hashed_token = hashlib.sha256(token.encode()).hexdigest()
 
     return hashed_token
+
+
+_TOKEN_HASH_PATTERN = re.compile(r"[0-9a-f]{64}")
+
+
+def is_valid_token_hash(token: Any) -> bool:
+    """True if `token` looks like a `hash_token()` output (64 lowercase hex chars)."""
+    return isinstance(token, str) and _TOKEN_HASH_PATTERN.fullmatch(token) is not None
 
 
 class KeyManagementRoutes(str, enum.Enum):

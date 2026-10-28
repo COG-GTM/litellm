@@ -11,7 +11,7 @@ from litellm.litellm_core_utils.core_helpers import (
     get_litellm_metadata_from_kwargs,
 )
 from litellm.litellm_core_utils.litellm_logging import StandardLoggingPayloadSetup
-from litellm.proxy._types import UserAPIKeyAuth
+from litellm.proxy._types import UserAPIKeyAuth, is_valid_token_hash
 from litellm.proxy.auth.auth_checks import (
     get_key_object,
     get_team_object,
@@ -307,8 +307,12 @@ class _ProxyDBLogger(CustomLogger):
             user_api_key_cache,
         )
 
-        # Step 1: If key fields are missing, look up the full key object
-        if metadata.get("user_api_key_alias") is None:
+        # Step 1: If key fields are missing, look up the full key object.
+        # Auth failures can carry the caller's raw, unverified credential here; only
+        # real token hashes are looked up.
+        if metadata.get("user_api_key_alias") is None and is_valid_token_hash(
+            api_key_hash
+        ):
             try:
                 key_obj = await get_key_object(
                     hashed_token=api_key_hash,

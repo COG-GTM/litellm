@@ -25,9 +25,11 @@ from litellm.proxy._types import (
     ProxyException,
     SSOUserDefinedValues,
     UserAPIKeyAuth,
+    hash_token,
 )
 from litellm.proxy.auth.auth_checks import (
     ExperimentalUIJWTToken,
+    _fetch_key_object_from_db_with_reconnect,
     _can_object_call_vector_stores,
     _check_team_member_budget,
     _get_fuzzy_user_object,
@@ -201,13 +203,17 @@ def test_get_key_object_from_ui_hash_key_invalid():
     assert key_object is None
 
 
+TEST_TOKEN_HASH_1 = hash_token("sk-test-token-1")
+TEST_TOKEN_HASH_2 = hash_token("sk-test-token-2")
+
+
 @pytest.mark.asyncio
 async def test_get_key_object_should_reconnect_once_on_db_connection_error():
     mock_prisma_client = MagicMock()
     mock_prisma_client.get_data = AsyncMock(
         side_effect=[
             httpx.ConnectError("db connection reset"),
-            UserAPIKeyAuth(token="hashed-token-1"),
+            UserAPIKeyAuth(token=TEST_TOKEN_HASH_1),
         ]
     )
     mock_prisma_client.attempt_db_reconnect = AsyncMock(return_value=True)
@@ -217,12 +223,12 @@ async def test_get_key_object_should_reconnect_once_on_db_connection_error():
     mock_cache.async_set_cache = AsyncMock()
 
     key_obj = await get_key_object(
-        hashed_token="hashed-token-1",
+        hashed_token=TEST_TOKEN_HASH_1,
         prisma_client=mock_prisma_client,
         user_api_key_cache=mock_cache,
     )
 
-    assert key_obj.token == "hashed-token-1"
+    assert key_obj.token == TEST_TOKEN_HASH_1
     assert mock_prisma_client.get_data.await_count == 2
     mock_prisma_client.attempt_db_reconnect.assert_awaited_once_with(
         reason="auth_get_key_object_lookup_failure",
@@ -245,7 +251,7 @@ async def test_get_key_object_should_raise_if_reconnect_fails_on_db_connection_e
 
     with pytest.raises(Exception, match="db not reachable after outage"):
         await get_key_object(
-            hashed_token="hashed-token-2",
+            hashed_token=TEST_TOKEN_HASH_2,
             prisma_client=mock_prisma_client,
             user_api_key_cache=mock_cache,
         )
@@ -1780,3 +1786,49 @@ async def test_team_member_budget_check_reads_from_spend_counter():
                 proxy_logging_obj=proxy_logging_obj,
             )
         assert exc_info.value.current_cost == 1.5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "hashed_token",
+    [
+        "' OR pg_sleep(5)--",
+        "x' UNION SELECT * FROM \"LiteLLM_UserTable\"--",
+        "not-a-hash",
+        hash_token("sk-1234").upper(),
+        hash_token("sk-1234") + "'",
+    ],
+)
+async def test_get_key_object_rejects_non_hash_token_without_db_lookup(hashed_token):
+    mock_prisma_client = MagicMock()
+    mock_prisma_client.get_data = AsyncMock()
+
+    mock_cache = MagicMock()
+    mock_cache.async_get_cache = AsyncMock(return_value=None)
+
+    with pytest.raises(ProxyException) as exc_info:
+        await get_key_object(
+            hashed_token=hashed_token,
+            prisma_client=mock_prisma_client,
+            user_api_key_cache=mock_cache,
+        )
+
+    assert exc_info.value.code == "401"
+    assert hashed_token not in exc_info.value.message
+    mock_prisma_client.get_data.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fetch_key_object_from_db_skips_non_hash_token():
+    mock_prisma_client = MagicMock()
+    mock_prisma_client.get_data = AsyncMock()
+
+    result = await _fetch_key_object_from_db_with_reconnect(
+        hashed_token="' OR pg_sleep(5)--",
+        prisma_client=mock_prisma_client,
+        parent_otel_span=None,
+        proxy_logging_obj=None,
+    )
+
+    assert result is None
+    mock_prisma_client.get_data.assert_not_called()
