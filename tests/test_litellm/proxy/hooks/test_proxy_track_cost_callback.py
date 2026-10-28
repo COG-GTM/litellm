@@ -385,7 +385,7 @@ async def test_async_post_call_failure_hook_enriches_auth_error_metadata():
 
     # This is what auth_exception_handler creates for 401 errors
     user_api_key_dict = UserAPIKeyAuth(
-        api_key="hashed_key",
+        api_key=hash_token("sk-test-key"),
         # key_alias, user_id, team_id, team_alias are all None
     )
 

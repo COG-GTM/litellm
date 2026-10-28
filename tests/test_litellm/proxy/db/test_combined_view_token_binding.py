@@ -28,7 +28,10 @@ def prisma_client():
     proxy_logging.failure_handler = AsyncMock()
     client = PrismaClient(database_url="mock://test", proxy_logging_obj=proxy_logging)
     client.db.query_first = AsyncMock(return_value=None)
-    with patch("litellm.proxy.proxy_server.proxy_logging_obj", MagicMock()):
+    mock_proxy_logging_obj = MagicMock()
+    mock_proxy_logging_obj.service_logging_obj.async_service_success_hook = AsyncMock()
+    mock_proxy_logging_obj.service_logging_obj.async_service_failure_hook = AsyncMock()
+    with patch("litellm.proxy.proxy_server.proxy_logging_obj", mock_proxy_logging_obj):
         yield client
 
 
