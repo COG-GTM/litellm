@@ -6449,6 +6449,60 @@ async def test_list_team_v1_batches_key_queries():
         assert result[1].keys == [key3]
 
 
+@pytest.mark.asyncio
+async def test_list_team_v1_fetches_all_team_keys_in_one_query():
+    """
+    list_team must fetch keys for every team with one find_many call, keep
+    each team's keys in DB order and return an empty list for keyless teams.
+    """
+    from unittest.mock import AsyncMock, MagicMock, Mock, patch
+
+    from fastapi import Request
+
+    from litellm.proxy._types import (
+        LiteLLM_TeamTable,
+        LitellmUserRoles,
+        UserAPIKeyAuth,
+    )
+    from litellm.proxy.management_endpoints.team_endpoints import list_team
+
+    teams = [
+        LiteLLM_TeamTable(team_id=f"team-{i}", team_alias=f"Team {i}") for i in range(3)
+    ]
+    keys = []
+    for team_id in ["team-1", "team-0", "team-1", "other-team"]:
+        key = MagicMock()
+        key.team_id = team_id
+        keys.append(key)
+
+    with patch("litellm.proxy.proxy_server.prisma_client") as mock_prisma_client, patch(
+        "litellm.proxy.management_endpoints.team_endpoints._authorize_and_filter_teams",
+        new_callable=AsyncMock,
+        return_value=teams,
+    ), patch(
+        "litellm.proxy.management_endpoints.team_endpoints.get_all_team_memberships",
+        new_callable=AsyncMock,
+        return_value=[],
+    ):
+        find_many = AsyncMock(return_value=keys)
+        mock_prisma_client.db.litellm_verificationtoken.find_many = find_many
+
+        result = await list_team(
+            http_request=Mock(spec=Request),
+            user_api_key_dict=UserAPIKeyAuth(
+                user_role=LitellmUserRoles.PROXY_ADMIN, user_id="admin_user"
+            ),
+        )
+
+    find_many.assert_awaited_once_with(
+        where={"team_id": {"in": ["team-0", "team-1", "team-2"]}}
+    )
+    assert [team.team_id for team in result] == ["team-0", "team-1", "team-2"]
+    assert result[0].keys == [keys[1]]
+    assert result[1].keys == [keys[0], keys[2]]
+    assert result[2].keys == []
+
+
 def test_new_team_request_accepts_team_member_budget_duration():
     """Test that NewTeamRequest does not silently drop team_member_budget_duration."""
     from litellm.proxy._types import NewTeamRequest
