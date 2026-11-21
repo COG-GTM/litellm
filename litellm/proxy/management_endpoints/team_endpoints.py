@@ -3814,6 +3814,8 @@ async def list_team(
         prisma_client, _team_ids, user_id=user_id
     )
 
+    keys_by_team_id = await _get_keys_by_team_id(prisma_client, _team_ids)
+
     returned_responses: List[TeamListResponseObject] = []
     for team in filtered_response:
         _team_memberships: List[LiteLLM_TeamMembership] = []
@@ -3821,10 +3823,7 @@ async def list_team(
             if tm.team_id == team.team_id:
                 _team_memberships.append(tm)
 
-        # add all keys that belong to the team
-        keys = await prisma_client.db.litellm_verificationtoken.find_many(
-            where={"team_id": team.team_id}
-        )
+        keys = keys_by_team_id.get(team.team_id, [])
 
         try:
             returned_responses.append(
@@ -3858,6 +3857,24 @@ async def list_team(
             ]
 
     return returned_responses
+
+
+async def _get_keys_by_team_id(
+    prisma_client: PrismaClient, team_ids: List[str]
+) -> Dict[str, List[Any]]:
+    """
+    Fetch the keys of all given teams in one query and group them by team_id.
+    """
+    keys_by_team_id: Dict[str, List[Any]] = {team_id: [] for team_id in team_ids}
+    if not team_ids:
+        return keys_by_team_id
+    keys = await prisma_client.db.litellm_verificationtoken.find_many(
+        where={"team_id": {"in": team_ids}}
+    )
+    for key in keys:
+        if key.team_id in keys_by_team_id:
+            keys_by_team_id[key.team_id].append(key)
+    return keys_by_team_id
 
 
 async def get_paginated_teams(
